@@ -344,7 +344,7 @@ def main(cfg: DictConfig):
         
     # wandb initialize
     if cfg.wandb.wandb and is_main:
-        wandb.init(project=cfg.wandb.project, name=cfg.wandb.name, entity=cfg.wandb.entity)
+        wandb.init(project=cfg.wandb.project, name=cfg.wandb.name)
 
     for epoch in range(train_cfg.num_epochs):
         model.train()
