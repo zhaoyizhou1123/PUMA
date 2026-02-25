@@ -97,13 +97,19 @@ def arm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
     return (xt, track_xt) if track else xt
 
 @torch.no_grad()
-def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, track: bool = False, arm_init: bool = False):
+def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, track: bool = False, arm_init: bool = False, prompt_mask: torch.Tensor = None):
     # sampling hyperparameters
     # xt can include clean tokens
     # if track == True, we return the trace (used for the debugging purpose)
     temperature = sampling_cfg.temperature
     confidence = sampling_cfg.confidence
     unmasking_num = sampling_cfg.unmasking_num
+    edit_freq = sampling_cfg.get("edit_freq", -1) # omega
+    edit_step = sampling_cfg.get("edit_step", 1) # S
+    if prompt_mask is None:
+        prompt_mask = torch.zeros_like(xt, dtype=torch.bool) # All responses
+    if edit_freq > 0:
+        assert edit_step > 0, "edit_step must be positive when edit_freq is set"
 
     # shape
     B, L = xt.shape
@@ -125,6 +131,10 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
         # calculate logits
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
             logits = model(torch.cat([xt_t1, xt], dim=1) if arm_init else xt) # [B, L, V]
+
+        if edit_freq > 0 and (i + 1) % edit_freq == 0:
+            xt, logits = mdm_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device, arm_init)
+
         if arm_init:
             logits = logits[:, :-1, :]
         logits_with_noise = gumbel_softmax(logits, temperature = temperature)
@@ -149,16 +159,44 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
             if k > 0:
                 _, select_indices = torch.topk(unmasking_score[j], k=k)
                 xt[j, select_indices] = torch.argmax(logits_with_noise[j, select_indices], dim = -1)
-            
+
         if track:
             cur = torch.cat([xt_t1, xt], dim=1) if arm_init else xt
             track_xt.append(cur.clone().detach().cpu())
     if arm_init:
         xt = torch.cat([xt_t1, xt], dim=1)
     if track:
+        track_xt = torch.stack(track_xt, dim=0) # (T, B, L)
         return xt, track_xt
     else:
         return xt
+
+@torch.no_grad()    
+def mdm_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device: torch.device = None, arm_init: bool = False):
+    '''
+    Learning Unmasking Policies for Diffusion Language Models (http://arxiv.org/abs/2512.09106)
+    '''
+    # self correction sampling. Currently only implements greedy sampling
+    assert arm_init == False, "ARM initialization is not compatible with edit sampling currently"
+
+    B, L = xt.shape
+    edit_step = sampling_cfg.edit_step
+    unmask_indices = (xt != mask_id)
+    if unmask_indices.sum() == 0:
+        return xt, logits
+    
+    new_pred = torch.argmax(logits, dim=-1) # [B, L]
+    yt = torch.where(~prompt_mask, new_pred, xt) # only edit the response part, keep the prompt unchanged
+    for i in range(edit_step):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
+            logits = model(yt) # [B, L, V]
+        new_pred = torch.argmax(logits, dim=-1) # [B, L]
+        yt = torch.where(~prompt_mask, new_pred, xt) # only update the response part
+    # Replace unmasked tokens
+    xt = torch.where(unmask_indices, yt, xt)
+    return xt, logits
+    
+
 
 @torch.no_grad()
 def mdm_sampling_block(model, xt, block_size, mask_id, sampling_cfg, device: torch.device = None):

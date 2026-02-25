@@ -11,13 +11,19 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3
 MASTER_ADDR=localhost
 MASTER_PORT=29500
 
-# export NCCL_SOCKET_IFNAME=ib0
-# export GLOO_SOCKET_IFNAME=ib0
-
 torchrun \
   --nnodes=1 \
   --nproc_per_node=4 \
   --node_rank=0 \
   --rdzv_backend=c10d \
   --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
-  train.py --cfg yaml_files/sudoku_puma.yaml
+  train_edit.py --cfg yaml_files/sudoku_puma_edit.yaml
+
+# torchrun \
+#   --nnodes=1 \
+#   --nproc_per_node=2 \
+#   --node_rank=0 \
+#   --rdzv_backend=c10d \
+#   --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
+#   train.py --cfg yaml_files/sudoku_puma.yaml
+

@@ -8,9 +8,10 @@ from tqdm import tqdm
 
 # sudoku eval helper
 
-def evaluate_ddp_sudoku(model, cfg, device, rank: int, world_size: int, sampling):
+def evaluate_ddp_sudoku(model, cfg, device, rank: int, world_size: int, sampling, step=0, logdir=None):
     val_dir = cfg.validation.val_dir
     mask_id = cfg.data.mask_id
+    # track = cfg.validation.get("track", False)
 
     # get the test Sudoku puzzle and answers
     test_inputs = os.path.join(val_dir, "test_mdm.npy")
@@ -38,10 +39,19 @@ def evaluate_ddp_sudoku(model, cfg, device, rank: int, world_size: int, sampling
         for j in tqdm(range(num_batches), desc = "Evaluating"):
             s = start + j * batch_size
             e = min(s + batch_size, end)
-            batch_X = torch.from_numpy(X[s:e]).long().to(device)
+            batch_X = torch.from_numpy(X[s:e]).long().to(device) # (B, 162)
             batch_Y = torch.from_numpy(Y[s:e]).long().to(device)
+            # Create a prompt mask
+            prompt_mask = torch.zeros_like(batch_X, dtype=torch.bool)
+            prompt_mask[:, :81] = True
 
-            pred = mdm_sampling(model, batch_X, mask_id, sampling, device)
+            if not cfg.validation.track or j >= 1:
+                pred = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask)
+            else: # Only track the first batch for visualization/debugging
+                pred, track_xt = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask, track=True)
+                track_xt = track_xt.cpu().numpy()  # (T, B, 162)
+                np.save(os.path.join(logdir, f"step{step}_rank{rank}.npy"), track_xt)
+
             matches = verify_sudoku(pred, batch_Y)
             local_correct += matches.sum().item()
             local_total += batch_Y.shape[0]

@@ -75,3 +75,10 @@ def split_sudoku(data_dir: str, sudoku_type: str, val_ratio: float = 0.05, seed:
     train_data, val_data = random_split(dataset, [n_train, n_val], generator=g)
     
     return train_data, val_data
+
+
+if __name__ == "__main__":
+    data_dir = "data/sudoku_new"
+    train_data, val_data = split_sudoku(data_dir, "new")
+    print(len(train_data), len(val_data))
+    print(val_data[0])
