@@ -31,7 +31,7 @@ def evaluate_ddp_sudoku(model, cfg, device, rank: int, world_size: int, sampling
     start = rank * per_rank
     end = min(start + per_rank, N_val)
 
-    batch_size = 16
+    batch_size = cfg.validation.get('batch_size', 64)
     num_batches = math.ceil((end - start) / batch_size)
     local_correct, local_total = 0, 0
 
