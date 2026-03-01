@@ -19,7 +19,7 @@ training:
   weight_decay: 0.01
   num_epochs: 2
   max_grad_norm: 1.0
-  batch_size: 32
+  batch_size: 64
   warmup_steps: 1000
   logging_steps: 100
   eval_steps: 2000
@@ -51,4 +51,4 @@ wandb:
   wandb: true
   project: "mdm-pretraining"
   name: "sudoku-puma"
-  entity: "your-entity-here"
+  entity: "zw2700"

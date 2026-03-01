@@ -65,4 +65,4 @@ wandb:
   wandb: true
   project: "mdm-pretraining"
   name: "puma"
-  entity: "your-entity-here"
+  entity: "zw2700"

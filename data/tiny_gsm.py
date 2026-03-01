@@ -5,6 +5,7 @@ from tqdm.auto import tqdm
 from datasets import load_dataset, load_dataset_builder
 from transformers import AutoTokenizer
 from torch.utils.data import Dataset, random_split
+from typing import Optional
 
 
 def _get_train_size_fallback():
@@ -18,7 +19,7 @@ def pretokenize_tinygsm(
     sep: str = "\n",
     batch_size: int = 2048,
     streaming: bool = True,
-    limit: int | None = None,
+    limit: Optional[int] = None,
 ):
     """
     Tokenize TinyGSM into fixed-length sequences and save as memmaps.
