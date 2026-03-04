@@ -1,0 +1,13 @@
+numpy>=1.25
+py-sudoku
+tqdm
+einops
+pyyaml
+packaging
+matplotlib
+transformers
+datasets
+huggingface-hub
+wandb
+pytorch-lightning
+omegaconf
