@@ -1,6 +1,9 @@
 __pycache__/
 *.npy
+*.jsonl
+*.json
 debug/
 debug*
 ckpts/
 wandb/
+outputs

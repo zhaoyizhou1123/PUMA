@@ -28,6 +28,9 @@ def setup_data_bundle(config: DictConfig) -> DatasetBundle:
         train_data, val_data = split_sudoku(config.data_dir, config.sudoku_type, val_ratio=config.val_ratio, seed=config.seed, mmap=config.mmap)
     elif config.dataset == "tinygsm":
         train_data, val_data = split_tinygsm(config.data_dir, val_ratio=config.val_ratio, seed=config.seed)
+    elif config.dataset == "maze":
+        from .maze import split_maze
+        train_data, val_data = split_maze(config.data_dir, val_ratio=config.val_ratio, seed=config.seed)
     
     train_loader = DataLoader(
         train_data,
