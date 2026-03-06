@@ -290,7 +290,7 @@ def main(cfg: DictConfig):
 
     # ckpt dir
     datetime_str = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-    ckpt_dir = f"ckpts/date={datetime_str}"
+    ckpt_dir = f"ckpts/{cfg.wandb.project}/{cfg.wandb.name}_date{datetime_str}"
     os.makedirs(ckpt_dir, exist_ok=True)
     if is_main:
         print(f"Checkpoints will be saved to: {ckpt_dir}")
@@ -498,13 +498,13 @@ def main(cfg: DictConfig):
                 if global_step % train_cfg.logging_steps == 0:
                     print(f"Epoch {epoch+1}, Step {global_step}, Loss {loss.item()}")
                     if cfg.wandb.wandb:
-                        wandb.log({"loss": loss.item()}, step=global_step)
+                        wandb.log({"train/loss": loss.item()}, step=global_step)
 
                         gn = grad_norm(model.parameters())
-                        wandb.log({"grad_norm": gn}, step=global_step)
+                        wandb.log({"train/grad_norm": gn}, step=global_step)
 
                         if strategy == "progressive":
-                            wandb.log({"current_k": current_k}, step=global_step)
+                            wandb.log({"train/current_k": current_k}, step=global_step)
 
             if global_step % train_cfg.eval_steps == 0:
                 model.eval()
@@ -536,14 +536,14 @@ def main(cfg: DictConfig):
                         print(f"Epoch {epoch+1}, Step {global_step}, Validation Accuracy {key}: {value}")
                         if cfg.wandb.wandb:
                             if train_cfg.ema is not None:
-                                wandb.log({"ema_val_acc_" + key: value}, step=global_step)
+                                wandb.log({"ema_test_acc/" + key: value}, step=global_step)
                             else:
-                                wandb.log({"val_acc_" + key: value}, step=global_step)
+                                wandb.log({"test_acc/" + key: value}, step=global_step)
                     
                     # validation loss logging
                     print(f"Epoch {epoch+1}, Step {global_step}, Validation Loss: {val_loss}")
                     if cfg.wandb.wandb:
-                        wandb.log({"val_loss": val_loss}, step=global_step)
+                        wandb.log({"val/val_loss": val_loss}, step=global_step)
 
                     if is_main and global_step % train_cfg.save_steps == 0 and train_cfg.ema is not None:
                         saved_path = save_ema_snapshot(ckpt_dir, model, ema, cfg, epoch, global_step, val_loss, val_acc_dict)
