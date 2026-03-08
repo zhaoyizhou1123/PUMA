@@ -6,8 +6,17 @@ def _range_mask(x: np.ndarray, lo: int, hi: int) -> np.ndarray:
     return (x >= lo) & (x <= hi)
 
 
+def sudoku_n_from_raw_len(raw_len: int) -> int:
+    """Infer n from raw quad sequence length (1 + 4*n^4)."""
+    n4 = (raw_len - 1) // 4
+    n = round(n4 ** 0.25)
+    assert n ** 4 == n4, f"raw_len {raw_len} doesn't correspond to a valid n"
+    return n
+
+
 def _infer_layout(
     quads: np.ndarray,
+    n: int,
     *,
     expect_strategy_all_zero: bool = False,
     base_options: Tuple[int, ...] = (0, 1),
@@ -16,11 +25,12 @@ def _infer_layout(
     Infer which positions in a 4-tuple correspond to (row, col, value, strategy).
 
     Returns: (base, row_pos, col_pos, val_pos, strat_pos)
-      base = 0 means rows/cols are 0..8
-      base = 1 means rows/cols are 1..9 (we'll later subtract 1)
+      base = 0 means rows/cols are 0..n²-1
+      base = 1 means rows/cols are 1..n² (we'll later subtract 1)
     """
-    n = quads.shape[0]
-    if n == 0:
+    n2 = n ** 2
+    num_quads = quads.shape[0]
+    if num_quads == 0:
         # No data to infer from; caller should handle separately.
         raise ValueError("Cannot infer layout from empty quad set.")
 
@@ -28,7 +38,7 @@ def _infer_layout(
     best_score = -1e18
 
     for base in base_options:
-        rc_lo, rc_hi = (0, 8) if base == 0 else (1, 9)
+        rc_lo, rc_hi = (0, n2 - 1) if base == 0 else (1, n2)
 
         for row_pos in range(4):
             for col_pos in range(4):
@@ -47,7 +57,7 @@ def _infer_layout(
                     valid = (
                         _range_mask(rows, rc_lo, rc_hi)
                         & _range_mask(cols, rc_lo, rc_hi)
-                        & _range_mask(vals, 1, 9)
+                        & _range_mask(vals, 1, n2)
                     )
                     valid_count = int(valid.sum())
 
@@ -59,7 +69,7 @@ def _infer_layout(
                         if base == 1:
                             rr = rr - 1
                             cc = cc - 1
-                        if ((rr < 0) | (rr > 8) | (cc < 0) | (cc > 8)).any():
+                        if ((rr < 0) | (rr >= n2) | (cc < 0) | (cc >= n2)).any():
                             unique_pairs = 0
                         else:
                             unique_pairs = len(set(map(tuple, np.stack([rr, cc], axis=1).tolist())))
@@ -72,8 +82,8 @@ def _infer_layout(
                     if expect_strategy_all_zero:
                         score += 20.0 * float(np.all(strat == 0))
 
-                    # Tiny bonus if strategy looks like a "code" (often > 9)
-                    if strat.max(initial=0) > 9:
+                    # Tiny bonus if strategy looks like a "code" (often > n2)
+                    if strat.max(initial=0) > n2:
                         score += 0.25
 
                     if score > best_score:
@@ -108,36 +118,37 @@ def _find_duplicates(vals: List[int]) -> Dict[int, int]:
     return {k: v for k, v in counts.items() if v > 1}
 
 
-def check_givens_do_not_violate_sudoku(puzzle_grid: np.ndarray) -> Tuple[bool, List[str]]:
+def check_givens_do_not_violate_sudoku(puzzle_grid: np.ndarray, n: int) -> Tuple[bool, List[str]]:
     """
     Checks Sudoku rule constraints ONLY on the non-zero entries.
     Returns: (ok, violations)
     """
-    if puzzle_grid.shape != (9, 9):
-        raise ValueError("puzzle_grid must be shape (9,9)")
+    n2 = n ** 2
+    if puzzle_grid.shape != (n2, n2):
+        raise ValueError(f"puzzle_grid must be shape ({n2},{n2})")
 
     violations: List[str] = []
 
     # Rows
-    for r in range(9):
+    for r in range(n2):
         row = [int(x) for x in puzzle_grid[r, :] if int(x) != 0]
         dups = _find_duplicates(row)
         if dups:
             violations.append(f"Row {r}: duplicate(s) {dups}")
 
     # Cols
-    for c in range(9):
+    for c in range(n2):
         col = [int(x) for x in puzzle_grid[:, c] if int(x) != 0]
         dups = _find_duplicates(col)
         if dups:
             violations.append(f"Col {c}: duplicate(s) {dups}")
 
-    # 3x3 boxes
-    for br in range(3):
-        for bc in range(3):
+    # n x n boxes
+    for br in range(n):
+        for bc in range(n):
             box = []
-            for r in range(br * 3, br * 3 + 3):
-                for c in range(bc * 3, bc * 3 + 3):
+            for r in range(br * n, br * n + n):
+                for c in range(bc * n, bc * n + n):
                     x = int(puzzle_grid[r, c])
                     if x != 0:
                         box.append(x)
@@ -148,60 +159,64 @@ def check_givens_do_not_violate_sudoku(puzzle_grid: np.ndarray) -> Tuple[bool, L
     return (len(violations) == 0), violations
 
 
-def sudoku_example_to_162(
+def sudoku_example_to_mdm(
     example: Sequence[int],
 ) -> Tuple[np.ndarray, Dict[str, object]]:
     """
     Convert one dataset example vector to:
-      - seq162: length 162, first 81 prompt, last 81 answers (row-major)
+      - seq: length 2*n^4, first n^4 prompt cells, last n^4 answers (row-major)
       - meta: puzzle/solution grids + validation info
 
     Assumes the example is:
-      [k, ... 324 ints ...] where 324 = 81*4 (81 quads), split into:
-        first k quads = givens
-        remaining 81-k quads = empties
+      [k, ... (4*n^4) ints ...] where each group of 4 is a quad,
+        first k quads = givens, remaining n^4-k quads = empties
     """
     a = np.asarray(example, dtype=int).ravel()
 
-    expected_len = 1 + 81 * 4
+    n = sudoku_n_from_raw_len(a.size)
+    n2 = n ** 2
+    n4 = n ** 4
+
+    expected_len = 1 + 4 * n4
     if a.size != expected_len:
-        raise ValueError(f"Expected length {expected_len} (1 + 81*4), got {a.size}")
+        raise ValueError(f"Expected length {expected_len} (1 + 4*n^4), got {a.size}")
 
     k = int(a[0])
-    if not (0 <= k <= 81):
+    if not (0 <= k <= n4):
         raise ValueError(f"Invalid givens count k={k}")
 
-    quads = a[1:].reshape(81, 4)
+    quads = a[1:].reshape(n4, 4)
     givens_quads = quads[:k]
     empties_quads = quads[k:]
 
     # Infer layout from empties if possible (usually more informative)
     if empties_quads.shape[0] > 0:
         base_e, rpe, cpe, vpe, spe = _infer_layout(
-            empties_quads, expect_strategy_all_zero=False, base_options=(0, 1)
+            empties_quads, n, expect_strategy_all_zero=False, base_options=(0, 1)
         )
         base_g, rpg, cpg, vpg, spg = _infer_layout(
             givens_quads if givens_quads.shape[0] > 0 else empties_quads,
+            n,
             expect_strategy_all_zero=True,
             base_options=(base_e,),
         )
     else:
         # All cells are givens; infer from givens only
         base_g, rpg, cpg, vpg, spg = _infer_layout(
-            givens_quads, expect_strategy_all_zero=True, base_options=(0, 1)
+            givens_quads, n, expect_strategy_all_zero=True, base_options=(0, 1)
         )
         base_e, rpe, cpe, vpe, spe = base_g, rpg, cpg, vpg, spg
 
-    puzzle = np.zeros((9, 9), dtype=int)
-    solution = np.zeros((9, 9), dtype=int)
+    puzzle = np.zeros((n2, n2), dtype=int)
+    solution = np.zeros((n2, n2), dtype=int)
 
     # Fill givens into puzzle + solution
     if k > 0:
         gr, gc, gv = _extract_rcv(givens_quads, base_g, rpg, cpg, vpg)
         for rr, cc, vv in zip(gr.tolist(), gc.tolist(), gv.tolist()):
-            if not (0 <= rr <= 8 and 0 <= cc <= 8):
+            if not (0 <= rr < n2 and 0 <= cc < n2):
                 raise ValueError(f"Given cell coordinate out of range: (r,c)=({rr},{cc})")
-            if not (1 <= vv <= 9):
+            if not (1 <= vv <= n2):
                 raise ValueError(f"Given value out of range at (r,c)=({rr},{cc}): {vv}")
             if puzzle[rr, cc] not in (0, vv):
                 raise ValueError(f"Conflicting given at (r,c)=({rr},{cc}): {puzzle[rr,cc]} vs {vv}")
@@ -212,9 +227,9 @@ def sudoku_example_to_162(
     if empties_quads.shape[0] > 0:
         er, ec, ev = _extract_rcv(empties_quads, base_e, rpe, cpe, vpe)
         for rr, cc, vv in zip(er.tolist(), ec.tolist(), ev.tolist()):
-            if not (0 <= rr <= 8 and 0 <= cc <= 8):
+            if not (0 <= rr < n2 and 0 <= cc < n2):
                 raise ValueError(f"Empty-cell coordinate out of range: (r,c)=({rr},{cc})")
-            if not (1 <= vv <= 9):
+            if not (1 <= vv <= n2):
                 raise ValueError(f"Solution value out of range at (r,c)=({rr},{cc}): {vv}")
             if solution[rr, cc] not in (0, vv):
                 raise ValueError(
@@ -223,12 +238,12 @@ def sudoku_example_to_162(
             solution[rr, cc] = vv
 
     # Validate givens don't violate Sudoku constraints
-    givens_ok, givens_violations = check_givens_do_not_violate_sudoku(puzzle)
+    givens_ok, givens_violations = check_givens_do_not_violate_sudoku(puzzle, n)
 
     # Create sequences (row-major)
-    prompt81 = puzzle.reshape(-1)          # 0 for empty
-    answer81 = solution.reshape(-1)        # should be 1..9 everywhere (if dataset is complete)
-    seq162 = np.concatenate([prompt81, answer81], axis=0)
+    prompt = puzzle.reshape(-1)    # 0 for empty
+    answer = solution.reshape(-1)  # should be 1..n² everywhere (if dataset is complete)
+    seq = np.concatenate([prompt, answer], axis=0)
 
     meta: Dict[str, object] = {
         "givens_count": k,
@@ -239,4 +254,9 @@ def sudoku_example_to_162(
         "layout_givens": {"base": base_g, "row_pos": rpg, "col_pos": cpg, "val_pos": vpg, "strat_pos": spg},
         "layout_empties": {"base": base_e, "row_pos": rpe, "col_pos": cpe, "val_pos": vpe, "strat_pos": spe},
     }
-    return seq162, meta
+    return seq, meta
+
+
+# Backward-compatible alias
+def sudoku_example_to_162(example: Sequence[int]) -> Tuple[np.ndarray, Dict[str, object]]:
+    return sudoku_example_to_mdm(example)

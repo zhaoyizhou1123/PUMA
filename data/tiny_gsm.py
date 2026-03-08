@@ -1,6 +1,7 @@
 import os, json
 import numpy as np
 import torch
+from typing import Optional
 from tqdm.auto import tqdm
 from datasets import load_dataset, load_dataset_builder
 from transformers import AutoTokenizer
@@ -18,7 +19,7 @@ def pretokenize_tinygsm(
     sep: str = "\n",
     batch_size: int = 2048,
     streaming: bool = True,
-    limit: int | None = None,
+    limit: Optional[int] = None,
 ):
     """
     Tokenize TinyGSM into fixed-length sequences and save as memmaps.

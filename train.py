@@ -365,8 +365,21 @@ def main(cfg: DictConfig):
 
         
     # wandb initialize
-    if cfg.wandb.wandb and is_main:
-        wandb.init(project=cfg.wandb.project, name=cfg.wandb.name)
+    if is_main:
+        wandb_enabled = OmegaConf.select(cfg, "wandb.wandb", default=False)
+        if wandb_enabled:
+            project = OmegaConf.select(cfg, "wandb.project", default="puma-mdm-pretraining")
+            name = OmegaConf.select(cfg, "wandb.name", default="unnamed-run")
+            print(f"Initializing wandb: project={project}, name={name}")
+            try:
+                wandb.init(project=project, name=name)
+                print(f"Wandb initialized successfully! Run URL: {wandb.run.url if wandb.run else 'N/A'}")
+            except Exception as e:
+                print(f"WARNING: Failed to initialize wandb: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("Wandb is disabled in config (wandb.wandb = false)")
 
     for epoch in range(train_cfg.num_epochs):
         model.train()
@@ -509,8 +522,23 @@ def main(cfg: DictConfig):
         dist.destroy_process_group()
 
 
+def resolve_sudoku_grid_size(cfg):
+    """If cfg.grid_size is set, compute and fill in n-dependent sudoku config fields."""
+    if OmegaConf.select(cfg, "grid_size") is None:
+        return cfg
+    n = cfg.grid_size
+    n2 = n ** 2
+    n4 = n ** 4
+    cfg = OmegaConf.to_container(cfg, resolve=True)
+    cfg["model"]["vocab_size"] = n2 + 2
+    cfg["model"]["max_position"] = 2 * n4
+    cfg["data"]["mask_id"] = n2 + 1
+    return OmegaConf.create(cfg)
+
+
 if __name__ == "__main__":
     args = parse_args()
     cfg_path = args.cfg
     cfg = OmegaConf.load(cfg_path)
+    cfg = resolve_sudoku_grid_size(cfg)
     main(cfg)

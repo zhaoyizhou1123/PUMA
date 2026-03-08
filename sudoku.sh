@@ -18,6 +18,7 @@
 # MODIFY THESE PARAMETERS
 # ============================================================================
 CONFIG_FILE="yaml_files/sudoku_puma.yaml"
+export WANDB_API_KEY="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"
 # Options: sudoku_puma.yaml, sudoku_baseline.yaml
 
 # ============================================================================

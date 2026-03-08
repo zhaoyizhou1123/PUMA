@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader, random_split
-from .preprocess_sudoku import sudoku_example_to_162
+from .preprocess_sudoku import sudoku_example_to_mdm, sudoku_n_from_raw_len
 
 class SudokuDataset(Dataset):
     """
@@ -19,40 +19,50 @@ class SudokuDataset(Dataset):
     def __init__(self, data_dir: str, sudoku_type: str, mmap: bool = True):
         # we sue mmap if the .npy's size is too large
         self.data_dir = data_dir
-        
+
         if sudoku_type == "new":
+            # infer n from the raw data shape
+            raw_sample = np.load(os.path.join(data_dir, "sudoku-train-data.npy"), mmap_mode="r")
+            n = sudoku_n_from_raw_len(raw_sample.shape[1])
+            self.n = n
+            self.n4 = n ** 4
+            self.seq_len = 2 * n ** 4
+
+            train_mdm_path = os.path.join(data_dir, f"train_mdm_n{n}.npy")
+            test_mdm_path = os.path.join(data_dir, f"test_mdm_n{n}.npy")
+
             # preprocess the sudoku dataset into an MDM-friendly version
-            if not os.path.exists(os.path.join(data_dir, "train_mdm.npy")):
+            if not os.path.exists(train_mdm_path):
                 labels = np.load(os.path.join(data_dir, "sudoku-train-data.npy"))
-                new_labels = np.zeros((len(labels), 162))
+                new_labels = np.zeros((len(labels), self.seq_len))
                 for i in tqdm(range(len(labels))):
-                    new_labels[i], meta = sudoku_example_to_162(labels[i])
+                    new_labels[i], meta = sudoku_example_to_mdm(labels[i])
                     if not meta["givens_ok"]:
                         print(meta["givens_violations"])
-                np.save(os.path.join(data_dir, "train_mdm.npy"), new_labels)
-                print("train_mdm.npy saved")
+                np.save(train_mdm_path, new_labels)
+                print(f"train_mdm_n{n}.npy saved")
                 self.labels = new_labels
             else:
-                labels = np.load(os.path.join(data_dir, "train_mdm.npy"))
+                labels = np.load(train_mdm_path)
                 self.labels = labels
 
             # also preprocess for the test dataset
-            if not os.path.exists(os.path.join(data_dir, "test_mdm.npy")):
+            if not os.path.exists(test_mdm_path):
                 labels = np.load(os.path.join(data_dir, "sudoku-test-data.npy"))
-                new_labels = np.zeros((len(labels) , 162))
+                new_labels = np.zeros((len(labels), self.seq_len))
                 for i in tqdm(range(len(labels))):
-                    new_labels[i], meta = sudoku_example_to_162(labels[i])
+                    new_labels[i], meta = sudoku_example_to_mdm(labels[i])
                     if not meta["givens_ok"]:
                         print(meta["givens_violations"])
-                np.save(os.path.join(data_dir, "test_mdm.npy"), new_labels)
-                print("test_mdm.npy saved")
+                np.save(test_mdm_path, new_labels)
+                print(f"test_mdm_n{n}.npy saved")
         else:
             raise ValueError(f"Invalid sudoku data type: {sudoku_type}")
 
-        # ad-hoc prmpt masking
-        self.prompt_mask = np.zeros((len(self.labels), 162), dtype = bool)
-        self.prompt_mask[:, : 81] = 1 # first 81 cells are clue, last 81 cells are answer
-    
+        # ad-hoc prompt masking
+        self.prompt_mask = np.zeros((len(self.labels), self.seq_len), dtype=bool)
+        self.prompt_mask[:, :self.n4] = 1  # first n^4 cells are clue, last n^4 cells are answer
+
     def __len__(self):
         return self.labels.shape[0]
 
@@ -73,7 +83,7 @@ def split_sudoku(data_dir: str, sudoku_type: str, val_ratio: float = 0.05, seed:
     # reproducible split
     g = torch.Generator().manual_seed(seed)
     train_data, val_data = random_split(dataset, [n_train, n_val], generator=g)
-    
+
     return train_data, val_data
 
 

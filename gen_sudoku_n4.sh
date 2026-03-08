@@ -53,6 +53,7 @@ python data/generate_sudoku.py \
     --difficulty-min 0.6 \
     --difficulty-max 0.78 \
     --allow-multi-solutions \
+    --output-dir data/sudoku_n4/
     --timeout 1
 
 GEN_EXIT=$?
