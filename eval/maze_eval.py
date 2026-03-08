@@ -8,23 +8,26 @@ from tqdm import tqdm
 
 # sudoku eval helper
 
-def evaluate_ddp_sudoku(model, cfg, device, rank: int, world_size: int, sampling, step=0, logdir=None):
+def evaluate_ddp_maze(model, cfg, device, rank: int, world_size: int, sampling, step=0, logdir=None):
     val_dir = cfg.validation.val_dir
     mask_id = cfg.data.mask_id
     # track = cfg.validation.get("track", False)
 
-    # get the test Sudoku puzzle and answers
-    test_inputs = os.path.join(val_dir, "test_mdm.npy")
-    test_answers = os.path.join(val_dir, "test_mdm.npy")
+    test_inputs = os.path.join(val_dir, "test_labels.npy")
+    test_answers = os.path.join(val_dir, "test_labels.npy")
+    prompt_mask_path = os.path.join(val_dir, "test_prompt_mask.npy")
 
     X, Y  = np.load(test_inputs), np.load(test_answers)
+    prompt_masks = np.load(prompt_mask_path)
     X = X.copy()
-    X[ : , 81:] = cfg.data.mask_id
+    X[~prompt_masks] = cfg.data.mask_id
     N = len(X)
     # for our initial runs, we split the validation set (time efficiency)
     ratio = cfg.validation.ratio
     N_val = int(N * ratio)
+    print(f"Total test cases: {N}, using {N_val} for evaluation (ratio={ratio})")
     X, Y = X[:N_val], Y[:N_val]
+    prompt_masks = prompt_masks[:N_val]
 
     # distribute test cases
     per_rank = math.ceil(N_val / world_size)
@@ -42,8 +45,9 @@ def evaluate_ddp_sudoku(model, cfg, device, rank: int, world_size: int, sampling
             batch_X = torch.from_numpy(X[s:e]).long().to(device) # (B, 162)
             batch_Y = torch.from_numpy(Y[s:e]).long().to(device)
             # Create a prompt mask
-            prompt_mask = torch.zeros_like(batch_X, dtype=torch.bool)
-            prompt_mask[:, :81] = True
+            # prompt_mask = torch.zeros_like(batch_X, dtype=torch.bool)
+            # prompt_mask[:, :81] = True
+            prompt_mask = torch.from_numpy(prompt_masks[s:e]).to(device)
 
             if not cfg.validation.track or j >= 1:
                 pred = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask)
@@ -52,7 +56,7 @@ def evaluate_ddp_sudoku(model, cfg, device, rank: int, world_size: int, sampling
                 track_xt = track_xt.cpu().numpy()  # (T, B, 162)
                 np.save(os.path.join(logdir, f"step{step}_rank{rank}.npy"), track_xt)
 
-            matches = verify_sudoku(pred, batch_Y)
+            matches = (pred == batch_Y).all(dim=1) # verify exact match for the whole solution
             local_correct += matches.sum().item()
             local_total += batch_Y.shape[0]
 

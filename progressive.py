@@ -35,6 +35,39 @@ def mdm_loss_fn(log_probs: torch.Tensor, x0: torch.Tensor, xt: torch.Tensor, mas
     # calculate the weights per seq
     return (per_seq_loss / num_mask).sum() / B
 
+def mdm_edit_loss_fn(log_probs: torch.Tensor, x0: torch.Tensor, xt: torch.Tensor, mask_id: int, prompt_mask: torch.Tensor, arm_init: bool = False) -> torch.Tensor:
+    """
+    compute the MDM (reweighted) loss with the given probs 
+    the progessive masking strategy requires log probs, so we cannot use the CE loss directly
+    The edit loss calculates on all positions
+    """
+    B, L, V = log_probs.shape
+    # masked = (xt == mask_id)
+
+    if arm_init:
+        # masked = masked[:, 1:]
+        x0 = x0[:, 1:]
+        log_probs = log_probs[:, :-1, :]
+        prompt_mask = prompt_mask[:, 1:]
+        L = L - 1
+
+    L_eff = L - prompt_mask.sum(dim=1, keepdim=True)
+    # num_mask = masked.sum(dim=1, keepdim=True).clamp_min(1).float()
+
+    # if masked.sum().item() == 0:
+    #     return log_probs.sum() * 0.0
+    
+    # compute the likelihood w.r.t. the true positions
+    nll = -log_probs.gather(dim = -1, index = x0.unsqueeze(-1)).squeeze(-1)
+    # per_seq_loss = (nll * masked).sum(dim = 1, keepdim=True)
+    per_seq_loss = (nll * (1-prompt_mask.float())).sum(dim=1, keepdim=True)
+
+    # calculate the weights per seq
+    # return (per_seq_loss / num_mask).sum() / B
+    # print("Edit loss", nll.shape, L, B, prompt_mask[0])
+    return (per_seq_loss / L_eff).sum() / B
+
+
 def build_intervals(K : int) -> List[Tuple[float, float]]:
     """
     Build K *ratio* intervals spanning [0, 1].
@@ -269,6 +302,66 @@ class PhasedMasking:
         if k_max > 0:
             score_conf = torch.where(mask_idx , log_probs.max(dim = 2)[0], torch.finfo(log_probs.dtype).min) # [B, L]
             xt = unmask_from_scores(score_conf, to_reveal, self.x0, self.xt)
+
+        if self.mode in ["confidence_collapse"]:
+            tau = math.log(self.confidence_threshold)
+            p = log_probs.max(dim = 2)[0]
+            update_unmask = (p > tau) & (xt == self.mask_id) & (~ self.state['prompt_mask'])
+            xt = torch.where(update_unmask, self.x0, xt)
+
+            # re-calculate the phase
+            phase_next = self.calculate_phase(xt)
+
+        self.xt = xt
+        self.state['phase'] = phase_next
+
+        
+        # if a seq goes through all stages, we refill
+        n_new = int(replace.sum().item())
+        if n_new > 0:
+            idx = replace.nonzero(as_tuple = False).squeeze(1) # [n_new]
+            stages = torch.zeros(n_new, device=device, dtype=torch.long)
+            new_x0, new_xt, new_masks, new_L_eff = self._refill_pool(n_new, stages)
+            self.x0[idx] = new_x0
+            self.xt[idx] = new_xt
+            self.state['prompt_mask'][idx] = new_masks
+            self.state['L_eff'][idx] = new_L_eff
+            self.state['phase'][idx] = 0
+
+        self.state['t'] += 1 # update the time step
+
+class PhasedMaskingEdit(PhasedMasking):
+    @torch.no_grad()
+    def update_with_logits(self, log_probs: torch.Tensor):
+        """
+        build the next batch of sequences following our method
+        """
+        B, L, V = log_probs.shape
+        device = self.device
+
+        # stages for the current update
+        phase_next = (self.state['phase'] + 1) % self.K
+        replace = (phase_next == 0)
+
+        mask_idx = (self.xt == self.mask_id) # [B, L]
+        assert not (mask_idx & self.state['prompt_mask']).any(), "prompt positions should not be masked"
+
+        ratio = self._sample_ratio(phase_next) # [B]
+        num_unmask = self._sample_target_unmasked(ratio, self.state['L_eff'])
+        current_num_unmask = (~mask_idx & ~self.state['prompt_mask']).sum(dim=1).long()
+        to_reveal = (num_unmask - current_num_unmask).clamp_min(0) # the number of actual tokens to reveal
+        # print(f"phase_next: {phase_next[:4]}, ratio: {ratio[:4]}, num_unmask: {num_unmask[:4]}, current_num_unmask: {current_num_unmask[:4]}, to_reveal: {to_reveal[:4]}, L_eff: {self.state['L_eff'][:4]}")
+
+        # don't update if replace == True
+        to_reveal = torch.where(replace, torch.zeros_like(to_reveal), to_reveal)
+
+        # progressive unmasking
+        k_max = int(to_reveal.max().item())
+        xt = self.xt
+        if k_max > 0:
+            score_conf = torch.where(mask_idx , log_probs.max(dim = 2)[0], torch.finfo(log_probs.dtype).min) # [B, L]
+            pred_token = log_probs.argmax(dim = 2) # [B, L]
+            xt = unmask_from_scores(score_conf, to_reveal, pred_token, self.xt) # Use current prediction
 
         if self.mode in ["confidence_collapse"]:
             tau = math.log(self.confidence_threshold)

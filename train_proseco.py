@@ -49,23 +49,14 @@ def evaluate_ddp_dict(model, cfg, device, rank, world_size, step=0, logdir=None)
 
     for confidence in list(base_sampling.confidence):
         for unmasking_num in list(base_sampling.unmasking_num):
-            sampling = deepcopy(base_sampling)
-            sampling.confidence = confidence
-            sampling.unmasking_num = unmasking_num
-            sampling.edit_freq = -1 # make comptable with edit eval
-            sampling.edit_step = 1
-            acc = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)
-            out[f"{confidence}_unmasking_{unmasking_num}"] = acc
-            # make compatible with edit logging
-            edit_freq_list = []
-            edit_step_list = []
-            if "edit_freq" in base_sampling:
-                edit_freq_list = list(base_sampling.edit_freq)
-            if "edit_step" in base_sampling:
-                edit_step_list = list(base_sampling.edit_step)
-            for edit_freq in edit_freq_list:
-                for edit_step in edit_step_list:
-                    out[f"{confidence}_unmasking_{unmasking_num}_efreq{edit_freq}_estep{edit_step}"] = acc
+            for edit_freq in list(base_sampling.edit_freq):
+                for edit_step in list(base_sampling.edit_step):
+                    sampling = deepcopy(base_sampling)
+                    sampling.confidence = confidence
+                    sampling.unmasking_num = unmasking_num
+                    sampling.edit_freq = edit_freq
+                    sampling.edit_step = edit_step
+                    out[f"{confidence}_unmasking_{unmasking_num}_efreq{edit_freq}_estep{edit_step}"] = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)
     return out
 
 def grad_norm(parameters):
@@ -110,7 +101,51 @@ def mdm_loss(model, input_ids, mask_id: int, prompt_mask: Optional[torch.Tensor]
     else:
         ce = F.cross_entropy(logits[mask_indices], input_ids[mask_indices], reduction="none")
     loss = ce / num_mask[mask_indices]
-    return loss.sum() / B
+    return loss.sum() / B, logits.detach(), num_mask.detach()
+
+def proseco_loss(model, input_ids, logits: torch.Tensor, num_mask: torch.Tensor, mask_id: int, prompt_mask: Optional[torch.Tensor] = None, arm_init: bool = False):
+    assert arm_init == False, f"We have not implemented arm_init=True for proseco"
+    # # sample integer uniformly for each batch from [1,L]
+    # # prompt_mask (boolean mask): 1 for prompt
+    # if prompt_mask is None:
+    #     prompt_mask = torch.zeros_like(input_ids, dtype=torch.bool)
+    # device = input_ids.device
+    B, L = input_ids.shape # L is prompt length + response length
+    # L_eff = L - prompt_mask.sum(dim=1 , keepdim=True)
+    # # uniformly sample the number of positions to mask
+    # num_mask = torch.floor(torch.rand(B, 1, device=device) * L_eff.clamp(min=1)).long() + 1
+
+    # # mask correspondent number of tokens for each batch, 0.0 for the prompt indices
+    # scores = torch.rand((B, L), device=device).masked_fill(prompt_mask, float('inf')).argsort(dim=1)
+    # order = scores.argsort(dim=1)
+    # mask_indices = (order < num_mask)
+    # masked_input = torch.where(mask_indices, mask_id, input_ids)
+    # logits = model(masked_input)
+
+    # # calculate (reweighted) loss
+    # num_mask = num_mask.float().expand_as(mask_indices) # (B, L)
+    # # num_mask = num_mask.float().squeeze(-1) # (B,)
+
+    # # logits[mask_indices]: (num_mask_total, V)
+    # if arm_init:
+    #     ce = F.cross_entropy(logits[:, :-1, :][mask_indices[:, 1:]], input_ids[:, 1:][mask_indices[:, 1:]], reduction="none")
+    # else:
+    #     ce = F.cross_entropy(logits[mask_indices], input_ids[mask_indices], reduction="none") # (num_mask_total,), ce loss of each token
+    # # num_mask[mask_indices] has shape (num_mask_total,), each token's loss is reweighted
+    # loss = ce / num_mask[mask_indices]
+    # # loss = ce / num_mask
+    # loss = loss.sum() / B
+
+    # next we compute self-correction loss
+    with torch.no_grad():
+        correction_input = torch.argmax(logits, dim=-1)
+    correction_logits = model(correction_input)
+    correction_loss = F.cross_entropy(correction_logits[~prompt_mask], input_ids[~prompt_mask], reduction="none") # (total response tokens,)
+    correction_loss = correction_loss / num_mask[~prompt_mask]
+    correction_loss = correction_loss.sum() / B
+
+    return correction_loss
+
 
 def arm_loss(
     model,
@@ -174,8 +209,8 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
                 if strategy == "arm":
                     loss = arm_loss(model, x0, eos_id=eos_id, prompt_mask=pm)
-                elif strategy in ["progressive", "standard"]:
-                    loss = mdm_loss(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
+                elif strategy in ["progressive", "standard", "proseco"]:
+                    loss, _, _ = mdm_loss(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
                 else:
                     raise ValueError(f"Unknown strategy: {strategy}")
             B = x0.shape[0]
@@ -232,6 +267,11 @@ def main(cfg: DictConfig):
     if is_main:
         print("Hey, we start training!")
         print(f"Training with {world_size} GPUs")
+
+    # Manually compute per-GPU batch size and set it in the config
+    bs = cfg.training.batch_size
+    assert bs % world_size == 0, f"Batch size {bs} must be divisible by world size {world_size}"
+    cfg.data.training.per_gpu_batch_size = bs // world_size
     
     base_seed = cfg.data.seed
     seed = base_seed + rank
@@ -294,6 +334,7 @@ def main(cfg: DictConfig):
     val_cfg = cfg.validation
     data_bundle = setup_data_bundle(data_cfg)
     train_loader, val_loader = data_bundle.train_loader, data_bundle.val_loader    
+    print(f"Data is ready, train samples: {len(train_loader.dataset)}, per gpu batch size: {cfg.data.training.per_gpu_batch_size}")
     mask_id = data_cfg.mask_id
     eos_id = getattr(val_cfg.sampling, "eos_id", None)
 
@@ -308,7 +349,7 @@ def main(cfg: DictConfig):
         )
         train_loader = DataLoader(
             train_loader.dataset,
-            batch_size=train_cfg.batch_size,
+            batch_size=data_cfg.training.per_gpu_batch_size, # dataloader batch_size is micro batch size
             sampler=train_sampler,
             num_workers=4,
             pin_memory=False,
@@ -366,7 +407,7 @@ def main(cfg: DictConfig):
         
     # wandb initialize
     if cfg.wandb.wandb and is_main:
-        wandb.init(project=cfg.wandb.project, name=cfg.wandb.name)
+        wandb.init(project=cfg.wandb.project, name=cfg.wandb.name, config=OmegaConf.to_container(cfg, resolve=True))
 
     for epoch in range(train_cfg.num_epochs):
         model.train()
@@ -378,7 +419,7 @@ def main(cfg: DictConfig):
             pool.reset_loader_iter()
             steps_per_epoch = len(train_loader)
             iterable = range(steps_per_epoch)
-        elif strategy == "standard" or strategy == "arm":
+        elif strategy == "standard" or strategy == "arm" or strategy == "proseco":
             iterable = train_loader
 
         if is_main:
@@ -397,6 +438,8 @@ def main(cfg: DictConfig):
                 pool.reset_loader_iter()
                 next_k_idx += 1
 
+            optimizer.zero_grad()
+
             # to enable flashattention, we do the autocast
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
                 if strategy == "progressive":
@@ -404,22 +447,31 @@ def main(cfg: DictConfig):
                     logits = model(xt)
                     log_probs = F.log_softmax(logits, dim=-1)
                     loss = mdm_loss_fn(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)
+                    loss.backward()
                 elif strategy == "standard":
                     batch = itr
                     input_ids = batch["labels"].to(device)
                     prompt_mask = batch["prompt_mask"].to(device) if "prompt_mask" in batch else None
-                    loss = mdm_loss(model, input_ids, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)
+                    loss, _, _ = mdm_loss(model, input_ids, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)
+                    loss.backward()
                 elif strategy == "arm":
                     batch = itr
                     input_ids = batch["labels"].to(device)
                     prompt_mask = batch["prompt_mask"].to(device) if "prompt_mask" in batch else None
                     loss = arm_loss(model, input_ids, eos_id=eos_id, prompt_mask=prompt_mask)
+                    loss.backward()
+                elif strategy == "proseco":
+                    batch = itr
+                    input_ids = batch["labels"].to(device)
+                    prompt_mask = batch["prompt_mask"].to(device) if "prompt_mask" in batch else None
+                    loss, logits, num_mask = mdm_loss(model, input_ids, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)
+                    loss.backward()
+                    correction_loss = proseco_loss(model, input_ids, logits, num_mask, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)                    
+                    correction_loss.backward()
+                    loss = loss + correction_loss
                 else:
                     raise ValueError(f"Invalid training strategy: {strategy}")
-            
-            optimizer.zero_grad()
 
-            loss.backward()
             if train_cfg.max_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), train_cfg.max_grad_norm)
             optimizer.step()

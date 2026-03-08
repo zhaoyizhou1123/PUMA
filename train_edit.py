@@ -19,7 +19,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import get_cosine_schedule_with_warmup
 from omegaconf import OmegaConf, DictConfig, ListConfig
 from model.ema import ExponentialMovingAverage, save_ema_snapshot, save_model_snapshot
-from progressive import PhasedMasking, mdm_loss_fn
+from progressive import PhasedMaskingEdit, mdm_edit_loss_fn
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from eval.gsm8k_eval import evaluate_ddp_gsm8k
 
@@ -49,23 +49,14 @@ def evaluate_ddp_dict(model, cfg, device, rank, world_size, step=0, logdir=None)
 
     for confidence in list(base_sampling.confidence):
         for unmasking_num in list(base_sampling.unmasking_num):
-            sampling = deepcopy(base_sampling)
-            sampling.confidence = confidence
-            sampling.unmasking_num = unmasking_num
-            sampling.edit_freq = -1 # make comptable with edit eval
-            sampling.edit_step = 1
-            acc = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)
-            out[f"{confidence}_unmasking_{unmasking_num}"] = acc
-            # make compatible with edit logging
-            edit_freq_list = []
-            edit_step_list = []
-            if "edit_freq" in base_sampling:
-                edit_freq_list = list(base_sampling.edit_freq)
-            if "edit_step" in base_sampling:
-                edit_step_list = list(base_sampling.edit_step)
-            for edit_freq in edit_freq_list:
-                for edit_step in edit_step_list:
-                    out[f"{confidence}_unmasking_{unmasking_num}_efreq{edit_freq}_estep{edit_step}"] = acc
+            for edit_freq in list(base_sampling.edit_freq):
+                for edit_step in list(base_sampling.edit_step):
+                    sampling = deepcopy(base_sampling)
+                    sampling.confidence = confidence
+                    sampling.unmasking_num = unmasking_num
+                    sampling.edit_freq = edit_freq
+                    sampling.edit_step = edit_step
+                    out[f"{confidence}_unmasking_{unmasking_num}_efreq{edit_freq}_estep{edit_step}"] = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)
     return out
 
 def grad_norm(parameters):
@@ -83,8 +74,8 @@ def evaluate_ddp(model, cfg, device, rank: int, world_size: int, sampling, step=
     else:
         raise ValueError(f"Invalid dataset: {cfg.data.dataset}")
 
-# mdm loss implementation
-def mdm_loss(model, input_ids, mask_id: int, prompt_mask: Optional[torch.Tensor] = None, arm_init: bool = False):
+# mdm loss implementation, but computes all indices
+def mdm_loss_edit(model, input_ids, mask_id: int, prompt_mask: Optional[torch.Tensor] = None, arm_init: bool = False):
     # sample integer uniformly for each batch from [1,L]
     # prompt_mask (boolean mask): 1 for prompt
     if prompt_mask is None:
@@ -92,6 +83,7 @@ def mdm_loss(model, input_ids, mask_id: int, prompt_mask: Optional[torch.Tensor]
     device = input_ids.device
     B, L = input_ids.shape
     L_eff = L - prompt_mask.sum(dim=1 , keepdim=True)
+    valid = ~prompt_mask
     # uniformly sample the number of positions to mask
     num_mask = torch.floor(torch.rand(B, 1, device=device) * L_eff.clamp(min=1)).long() + 1
 
@@ -106,11 +98,10 @@ def mdm_loss(model, input_ids, mask_id: int, prompt_mask: Optional[torch.Tensor]
     num_mask = num_mask.float().expand_as(mask_indices)
 
     if arm_init:
-        ce = F.cross_entropy(logits[:, :-1, :][mask_indices[:, 1:]], input_ids[:, 1:][mask_indices[:, 1:]], reduction="none")
-    else:
-        ce = F.cross_entropy(logits[mask_indices], input_ids[mask_indices], reduction="none")
-    loss = ce / num_mask[mask_indices]
-    return loss.sum() / B
+        logits = logits[:, :-1, :]
+        input_ids = input_ids[:, 1:]
+        valid = valid[:, 1:]
+    return F.cross_entropy(logits[valid], input_ids[valid], reduction="mean")
 
 def arm_loss(
     model,
@@ -174,8 +165,8 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
                 if strategy == "arm":
                     loss = arm_loss(model, x0, eos_id=eos_id, prompt_mask=pm)
-                elif strategy in ["progressive", "standard"]:
-                    loss = mdm_loss(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
+                elif strategy in ["progressive_edit", "standard"]:
+                    loss = mdm_loss_edit(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
                 else:
                     raise ValueError(f"Unknown strategy: {strategy}")
             B = x0.shape[0]
@@ -232,6 +223,11 @@ def main(cfg: DictConfig):
     if is_main:
         print("Hey, we start training!")
         print(f"Training with {world_size} GPUs")
+
+    # Manually compute per-GPU batch size and set it in the config
+    bs = cfg.training.batch_size
+    assert bs % world_size == 0, f"Batch size {bs} must be divisible by world size {world_size}"
+    cfg.data.training.per_gpu_batch_size = bs // world_size
     
     base_seed = cfg.data.seed
     seed = base_seed + rank
@@ -308,7 +304,8 @@ def main(cfg: DictConfig):
         )
         train_loader = DataLoader(
             train_loader.dataset,
-            batch_size=train_cfg.batch_size,
+            # batch_size=train_cfg.batch_size,
+            batch_size=data_cfg.training.per_gpu_batch_size, # dataloader batch_size is micro batch size
             sampler=train_sampler,
             num_workers=4,
             pin_memory=False,
@@ -330,9 +327,9 @@ def main(cfg: DictConfig):
             print("EMA is enabled with decay:", train_cfg.ema)
 
     strategy = train_cfg.strategy
-    # k schedule for progressive unmasking. If None use fixed K. If "linear", linearly increase the unmasking steps from 1 to K over the training steps.
+    # k schedule for progressive_edit unmasking. If None use fixed K. If "linear", linearly increase the unmasking steps from 1 to K over the training steps.
     # If a list of integers, use the list as the k_steps. If an integer, use constant interval increase.
-    if strategy == "progressive":
+    if strategy == "progressive_edit":
         k_schedule = parse_k_schedule_increasing(getattr(train_cfg, "k_schedule", None))
         if len(k_schedule) == 0:
             k_schedule = [(train_cfg.K, 0)]
@@ -350,7 +347,7 @@ def main(cfg: DictConfig):
         def make_pool(K):
             B = train_cfg.batch_size
             L = model_config.max_position
-            return PhasedMasking(
+            return PhasedMaskingEdit(
                 train_loader, B, mask_id, K, device, L,
                 mode=train_cfg.mode,
                 confidence_threshold=train_cfg.confidence_threshold,
@@ -366,7 +363,8 @@ def main(cfg: DictConfig):
         
     # wandb initialize
     if cfg.wandb.wandb and is_main:
-        wandb.init(project=cfg.wandb.project, name=cfg.wandb.name)
+        wandb.init(project=cfg.wandb.project, name=cfg.wandb.name, config=OmegaConf.to_container(cfg, resolve=True))
+
 
     for epoch in range(train_cfg.num_epochs):
         model.train()
@@ -374,7 +372,7 @@ def main(cfg: DictConfig):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
-        if strategy == "progressive":
+        if strategy == "progressive_edit":
             pool.reset_loader_iter()
             steps_per_epoch = len(train_loader)
             iterable = range(steps_per_epoch)
@@ -388,7 +386,7 @@ def main(cfg: DictConfig):
 
         for itr in pbar:
             # update current K if using k schedule
-            if strategy == "progressive" and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
+            if strategy == "progressive_edit" and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
                 current_k = k_schedule[next_k_idx][0]
                 if is_main:
                     print(f"[K-SWITCH] Step {global_step}: K={current_k}")
@@ -399,16 +397,18 @@ def main(cfg: DictConfig):
 
             # to enable flashattention, we do the autocast
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
-                if strategy == "progressive":
+                if strategy == "progressive_edit":
                     xt = pool.current_batch()
+                    # print("xt:", xt)
                     logits = model(xt)
                     log_probs = F.log_softmax(logits, dim=-1)
-                    loss = mdm_loss_fn(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)
+                    loss = mdm_edit_loss_fn(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)
+                    # print(loss.shape)
                 elif strategy == "standard":
                     batch = itr
                     input_ids = batch["labels"].to(device)
                     prompt_mask = batch["prompt_mask"].to(device) if "prompt_mask" in batch else None
-                    loss = mdm_loss(model, input_ids, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)
+                    loss = mdm_loss_edit(model, input_ids, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)
                 elif strategy == "arm":
                     batch = itr
                     input_ids = batch["labels"].to(device)
@@ -429,7 +429,7 @@ def main(cfg: DictConfig):
             global_step += 1
             
             # update a new seq
-            if strategy == "progressive":
+            if strategy == "progressive_edit":
                 pool.update_with_logits(log_probs)
 
             if is_main:
@@ -443,7 +443,7 @@ def main(cfg: DictConfig):
                         gn = grad_norm(model.parameters())
                         wandb.log({"grad_norm": gn}, step=global_step)
 
-                        if strategy == "progressive":
+                        if strategy == "progressive_edit":
                             wandb.log({"current_k": current_k}, step=global_step)
 
             if global_step % train_cfg.eval_steps == 0:
@@ -467,7 +467,7 @@ def main(cfg: DictConfig):
                    
                     with torch.inference_mode():
                         # validaton on the downstream task
-                        val_acc_dict = evaluate_ddp_dict(model, cfg, device, rank, world_size)
+                        val_acc_dict = evaluate_ddp_dict(model, cfg, device, rank, world_size, step=global_step, logdir=track_dir)
                     ema.restore(model_to_ema.parameters())
                 
                 if is_main:

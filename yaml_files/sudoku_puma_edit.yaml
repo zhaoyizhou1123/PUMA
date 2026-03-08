@@ -10,7 +10,7 @@ model:
   dropout: 0.0
 
 training:
-  strategy: "progressive"
+  strategy: "progressive_edit"
   confidence_threshold: 0.9
   mode: "standard" # [standard, x0, mixed]
   K: 8
@@ -19,7 +19,7 @@ training:
   weight_decay: 0.01
   num_epochs: 6
   max_grad_norm: 1.0
-  batch_size: 64
+  batch_size: 128 # This should now be global batch size
   warmup_steps: 1000
   logging_steps: 100
   eval_steps: 5000
@@ -47,11 +47,11 @@ data:
   seed: 123
   mmap: false
   training:
-    per_gpu_batch_size: ${training.batch_size}
+    # per_gpu_batch_size: ${training.batch_size} # This will be set in the training script based on the world size
     cpus: 4
 
 wandb:
   wandb: true
-  project: "mdm-pretraining"
-  name: "sudoku-puma"
-  entity: "zw2700"
+  project: "puma-mdm-pretraining"
+  name: "sudoku-puma-edit-v3-s${data.seed}"
+  entity: "your-entity-here"
