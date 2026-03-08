@@ -1,0 +1,58 @@
+model:
+  vocab_size: 11
+  hidden_size: 256
+  intermediate_size: 768
+  num_layers: 8
+  num_attention_heads: 8
+  num_kv_heads: 8
+  max_position: 162
+  rms_norm_eps: 1e-6
+  dropout: 0.0
+
+training:
+  strategy: "proseco"
+  confidence_threshold: 0.9
+  mode: "standard" # [standard, x0, mixed]
+  K: 8
+  data_ratio: 1.0
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  num_epochs: 6
+  max_grad_norm: 1.0
+  batch_size: 64
+  warmup_steps: 1000
+  logging_steps: 100
+  eval_steps: 5000
+  save_steps: 10000
+  ema: null
+  eos_id: null
+
+validation:
+  val_dir: "data/sudoku_new"
+  ratio: 0.01
+  batch_size: 1024
+  sampling: 
+    temperature: 0.0
+    confidence: ["top_k"]
+    unmasking_num: [1, 3]
+    edit_freq: [-1, 1, 3, 9]
+    edit_step: [4]
+  track: false
+
+data:
+  mask_id: 10
+  dataset: "sudoku"
+  data_dir: "data/sudoku_new"
+  sudoku_type: "new"
+  val_ratio: 0.05
+  seed: 12
+  mmap: false
+  training:
+    # per_gpu_batch_size: ${training.batch_size}
+    cpus: 4
+
+wandb:
+  wandb: true
+  project: "puma-mdm-pretraining"
+  name: "sudoku-puma-proseco-bs${training.batch_size}-s${data.seed}"
+  entity: "your-entity-here"
