@@ -23,6 +23,7 @@ from model.ema import ExponentialMovingAverage, save_ema_snapshot, save_model_sn
 from progressive import PhasedMasking, mdm_loss_fn
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from eval.gsm8k_eval import evaluate_ddp_gsm8k
+import contextlib
 
 
 def setup_ddp():
@@ -473,7 +474,12 @@ def main(cfg: DictConfig):
                     input_ids = batch["labels"].to(device)
                     prompt_mask = batch["prompt_mask"].to(device) if "prompt_mask" in batch else None
                     loss, logits, num_mask = mdm_loss(model, input_ids, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)
-                    loss.backward()
+                    # Backward 1: Accumulate locally, do NOT sync across GPUs
+                    # Fall back to a nullcontext if running on a single GPU without DDP
+                    sync_context = model.no_sync() if isinstance(model, DDP) else contextlib.nullcontext()                    
+                    with sync_context:
+                        loss.backward()
+
                     correction_loss = proseco_loss(model, input_ids, logits, num_mask, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)                    
                     correction_loss.backward()
                     loss = loss + correction_loss

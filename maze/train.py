@@ -20,7 +20,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import get_cosine_schedule_with_warmup
 from omegaconf import OmegaConf, DictConfig, ListConfig, open_dict
 from model.ema import ExponentialMovingAverage, save_ema_snapshot, save_model_snapshot
-from progressive import PhasedMaskingEdit, mdm_edit_loss_fn, mdm_loss_fn
+from progressive import PhasedMaskingEdit, PhasedMasking, mdm_edit_loss_fn, mdm_loss_fn
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from eval.gsm8k_eval import evaluate_ddp_gsm8k
 
@@ -388,12 +388,22 @@ def main(cfg: DictConfig):
         def make_pool(K):
             B = train_cfg.batch_size
             L = model_config.max_position
-            return PhasedMaskingEdit(
-                train_loader, B, mask_id, K, device, L,
-                mode=train_cfg.mode,
-                confidence_threshold=train_cfg.confidence_threshold,
-                eos_id=train_cfg.eos_id,
-            )
+            
+            if strategy == "progressive":
+                return PhasedMasking(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "progressive_edit":
+                return PhasedMaskingEdit(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            raise ValueError(f"Unknown strategy: {strategy}")
         pool = make_pool(current_k)
         next_k_idx = 1
 

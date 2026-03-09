@@ -1,8 +1,8 @@
 # !/bin/bash
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=0
 
 MASTER_ADDR=localhost
-MASTER_PORT=29500
+MASTER_PORT=29502
 
 torchrun \
   --nnodes=1 \

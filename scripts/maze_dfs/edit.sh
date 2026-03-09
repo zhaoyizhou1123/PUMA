@@ -1,8 +1,8 @@
 # !/bin/bash
-export CUDA_VISIBLE_DEVICES=1
+export CUDA_VISIBLE_DEVICES=5
 
 MASTER_ADDR=localhost
-MASTER_PORT=29500
+MASTER_PORT=29505
 
 torchrun \
   --nnodes=1 \
@@ -18,7 +18,7 @@ torchrun \
      +validation.sampling.edit_freq=[1] \
      +validation.sampling.edit_step=[1] \
      validation.track=False \
-     data.seed=1
+     data.seed=12
      
 torchrun \
   --nnodes=1 \
@@ -34,7 +34,7 @@ torchrun \
      +validation.sampling.edit_freq=[1] \
      +validation.sampling.edit_step=[1] \
      validation.track=False \
-     data.seed=1
+     data.seed=12
 
 torchrun \
   --nnodes=1 \
@@ -50,4 +50,4 @@ torchrun \
      +validation.sampling.edit_freq=[1] \
      +validation.sampling.edit_step=[1] \
      validation.track=False \
-     data.seed=1
+     data.seed=12

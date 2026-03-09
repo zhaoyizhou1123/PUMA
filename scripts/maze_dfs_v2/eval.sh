@@ -1,5 +1,5 @@
 # !/bin/bash
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=5
 
 MASTER_ADDR=localhost
 MASTER_PORT=29503
@@ -12,10 +12,11 @@ torchrun \
   --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
   -m maze.eval --config-name maze_dfs_v2 \
      training.strategy=progressive_edit \
-     +validation.ckpt_path=ckpts/maze17x17_dfs_v2-pretraining/maze-progressive_edit-s123_date2026-03-06-00-03/step45000.pt \
-     validation.sampling.unmasking_num=[1,5,10] \
+     +validation.ckpt_path=ckpts/maze17x17_dfs_v2-pretraining/maze-progressive-s123_date2026-03-06-00-02/step5000.pt \
+     validation.sampling.unmasking_num=[10] \
      +validation.sampling.edit_freq=[1] \
      +validation.sampling.edit_step=[1] \
+     validation.track=False
 
 # torchrun \
 #   --nnodes=1 \

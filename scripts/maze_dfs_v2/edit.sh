@@ -1,10 +1,10 @@
 # !/bin/bash
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=1
 
 MASTER_ADDR=localhost
-MASTER_PORT=29501
+MASTER_PORT=29507
 
-for lr in 1e-4 5e-5 1e-5; do
+for K in 20 10; do
   torchrun \
     --nnodes=1 \
     --nproc_per_node=1 \
@@ -15,11 +15,12 @@ for lr in 1e-4 5e-5 1e-5; do
        training.strategy=progressive_edit \
        training.eval_steps=5000 \
        training.save_steps=5000 \
-       training.learning_rate=$lr \
+       training.num_epochs=10 \
+       training.warmup_steps=1000 \
        validation.sampling.unmasking_num=[10] \
        +validation.sampling.edit_freq=[1] \
        +validation.sampling.edit_step=[1] \
        validation.track=False \
-       wandb.name="maze-progressive_edit-lr${lr}-s123"
+       wandb.name="maze-progressive_edit-K${K}-s123"
 done
      
