@@ -20,7 +20,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import get_cosine_schedule_with_warmup
 from omegaconf import OmegaConf, DictConfig, ListConfig, open_dict
 from model.ema import ExponentialMovingAverage, save_ema_snapshot, save_model_snapshot
-from progressive import PhasedMaskingEdit, PhasedMasking, mdm_edit_loss_fn, mdm_loss_fn
+from progressive import PhasedMaskingEdit, PhasedMaskingEditV2, PhasedMasking, mdm_edit_loss_fn, mdm_loss_fn
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from eval.gsm8k_eval import evaluate_ddp_gsm8k
 
@@ -203,7 +203,7 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
                 if strategy == "arm":
                     loss = arm_loss(model, x0, eos_id=eos_id, prompt_mask=pm)
-                elif strategy in ["progressive_edit"]:
+                elif strategy in ["progressive_edit", "edit_v2"]:
                     loss = mdm_loss_edit(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
                 elif strategy in ["standard", "progressive"]:
                     loss = mdm_loss(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
@@ -370,7 +370,7 @@ def main(cfg: DictConfig):
     strategy = train_cfg.strategy
     # k schedule for progressive_edit unmasking. If None use fixed K. If "linear", linearly increase the unmasking steps from 1 to K over the training steps.
     # If a list of integers, use the list as the k_steps. If an integer, use constant interval increase.
-    if strategy in ["progressive", "progressive_edit"]: # puma, ours
+    if strategy in ["progressive", "progressive_edit", "edit_v2"]: # puma, ours
         k_schedule = parse_k_schedule_increasing(getattr(train_cfg, "k_schedule", None))
         if len(k_schedule) == 0:
             k_schedule = [(train_cfg.K, 0)]
@@ -403,6 +403,13 @@ def main(cfg: DictConfig):
                     confidence_threshold=train_cfg.confidence_threshold,
                     eos_id=train_cfg.eos_id,
                 )
+            if strategy == "edit_v2":
+                return PhasedMaskingEditV2(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
             raise ValueError(f"Unknown strategy: {strategy}")
         pool = make_pool(current_k)
         next_k_idx = 1
@@ -423,7 +430,7 @@ def main(cfg: DictConfig):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
-        if strategy in ["progressive", "progressive_edit"]:
+        if strategy in ["progressive", "progressive_edit", "edit_v2"]:
             pool.reset_loader_iter()
             steps_per_epoch = len(train_loader)
             iterable = range(steps_per_epoch)
@@ -437,7 +444,7 @@ def main(cfg: DictConfig):
 
         for itr in pbar:
             # update current K if using k schedule
-            if strategy in ["progressive", "progressive_edit"] and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
+            if strategy in ["progressive", "progressive_edit", "edit_v2"] and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
                 current_k = k_schedule[next_k_idx][0]
                 if is_main:
                     print(f"[K-SWITCH] Step {global_step}: K={current_k}")
@@ -448,7 +455,7 @@ def main(cfg: DictConfig):
 
             # to enable flashattention, we do the autocast
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
-                if strategy == "progressive_edit":
+                if strategy in ["progressive_edit", "edit_v2"]:
                     xt = pool.current_batch()
                     # print("xt:", xt)
                     logits = model(xt)
@@ -485,7 +492,7 @@ def main(cfg: DictConfig):
             global_step += 1
             
             # update a new seq
-            if strategy in ["progressive", "progressive_edit"]:
+            if strategy in ["progressive", "progressive_edit", "edit_v2"]:
                 pool.update_with_logits(log_probs)
 
             if is_main:
@@ -499,7 +506,7 @@ def main(cfg: DictConfig):
                         gn = grad_norm(model.parameters())
                         wandb.log({"train/grad_norm": gn}, step=global_step)
 
-                        if strategy in ["progressive", "progressive_edit"]:
+                        if strategy in ["progressive", "progressive_edit", "edit_v2"]:
                             wandb.log({"train/current_k": current_k}, step=global_step)
 
             if global_step % train_cfg.eval_steps == 0:

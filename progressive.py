@@ -389,3 +389,34 @@ class PhasedMaskingEdit(PhasedMasking):
             self.state['phase'][idx] = 0
 
         self.state['t'] += 1 # update the time step
+
+class PhasedMaskingEditV2(PhasedMaskingEdit):
+    '''
+    No clean tokens, start from full masks
+    '''
+    @torch.no_grad()
+    def _refill_pool(self, n: int, stages: torch.Tensor):
+        """
+        initialize the pool of sequences
+         * used at the very first training batch and refill
+         * for the first step, n = B, for the refill, n = n_new
+        """
+        L, device = self.L, self.device
+        new_x0, new_masks = self._get_new_seq(n)
+
+        # per-seq effective length (# non-prompt tokens)
+        new_L_eff = (~new_masks).sum(dim = 1).long() # [n]
+        # ratio = self._sample_ratio(stages) # [n]
+        # u0 = self._sample_target_unmasked(ratio, new_L_eff) # [n]
+
+        # contstruct xt, while maintaining prompts
+        new_xt = torch.full_like(new_x0, self.mask_id)
+        new_xt = torch.where(new_masks, new_x0, new_xt)
+        # k_max = int(u0.max().item())
+        # if k_max > 0:
+        #     # the score is random for the first step, setting -inf for prompt positions
+        #     rand_score = torch.rand(n , L, device=device, dtype=torch.float)
+        #     rand_score = torch.where(new_masks, torch.finfo(rand_score.dtype).min, rand_score)
+        #     new_xt = unmask_from_scores(rand_score, u0, new_x0, new_xt)
+
+        return new_x0, new_xt, new_masks, new_L_eff
