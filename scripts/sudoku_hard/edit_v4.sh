@@ -1,10 +1,9 @@
 # !/bin/bash
-export CUDA_VISIBLE_DEVICES=4
-
+export CUDA_VISIBLE_DEVICES=0
 MASTER_ADDR=localhost
-MASTER_PORT=29501
+MASTER_PORT=29500
 
-for K in 8; do
+for K in 2; do
 torchrun \
   --nnodes=1 \
   --nproc_per_node=1 \
@@ -12,14 +11,14 @@ torchrun \
   --rdzv_backend=c10d \
   --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
   -m maze.train --config-path "../yaml_files/sudoku_hard" --config-name base \
-     training.strategy=progressive_edit \
+     training.strategy=edit_v4 \
      training.eval_steps=5000 \
      training.save_steps=5000 \
      training.K=$K \
-     validation.sampling.unmasking_num=[9] \
-     +validation.sampling.edit_freq=[3] \
-     +validation.sampling.edit_step=[4] \
+     validation.sampling.unmasking_num=[1] \
+     +validation.sampling.strategy=multi_proseco \
+     +validation.sampling.correction_step=0 \
      validation.track=False \
      data.seed=123 \
-     wandb.name=K${K}_progressive_edit_seed123
+     wandb.name=K${K}_edit_v4_seed123
 done

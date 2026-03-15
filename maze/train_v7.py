@@ -357,7 +357,8 @@ def main(cfg: DictConfig):
 
     # optimizer and scheduler
     optimizer = optim.AdamW(model.parameters(), lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay)
-    num_training_steps = train_cfg.num_epochs * len(train_loader)
+    num_training_steps = train_cfg.num_epochs * len(train_loader) * train_cfg.K
+    print(f"Total training steps: {num_training_steps}")
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=train_cfg.warmup_steps, num_training_steps=num_training_steps)
     if train_cfg.ema is not None:
         assert 0.0 < train_cfg.ema < 1.0, "EMA decay must be between 0 and 1"
@@ -443,8 +444,8 @@ def main(cfg: DictConfig):
                     eos_id=train_cfg.eos_id,
                 )
             if strategy == "edit_v7":
-                from progressive import PhasedMaskingEditV7
-                return PhasedMaskingEditV7(
+                from progressive import PhasedMaskingEditV6
+                return PhasedMaskingEditV6(
                     train_loader, B, mask_id, K, device, L,
                     mode=train_cfg.mode,
                     confidence_threshold=train_cfg.confidence_threshold,
@@ -472,7 +473,7 @@ def main(cfg: DictConfig):
 
         if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
             pool.reset_loader_iter()
-            steps_per_epoch = len(train_loader)
+            steps_per_epoch = len(train_loader) * train_cfg.K
             iterable = range(steps_per_epoch)
         elif strategy == "standard" or strategy == "arm":
             iterable = train_loader
@@ -495,19 +496,20 @@ def main(cfg: DictConfig):
 
             # to enable flashattention, we do the autocast
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
-                if strategy in ["progressive_edit", "edit_v2", "edit_v3", "edit_v4", "edit_v7"]:
+                if strategy in ["progressive_edit", "edit_v2", "edit_v3", "edit_v4"]:
                     xt = pool.current_batch()
                     # print("xt:", xt)
                     logits = model(xt)
                     log_probs = F.log_softmax(logits, dim=-1)
                     loss = mdm_edit_loss_fn(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)
                     # print(loss.shape)
-                elif strategy in ["edit_v5", "edit_v6"]:
+                elif strategy in ["edit_v5", "edit_v6", "edit_v7"]:
                     xt = pool.current_batch()
+                    phase = pool.get_phase()
                     # print("xt:", xt)
                     logits = model(xt)
                     log_probs = F.log_softmax(logits, dim=-1)
-                    loss = mdm_edit_loss_fn_v5(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)                   
+                    loss = mdm_edit_loss_fn_v5(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], phase=phase, arm_init=model_config.predict_next_token)                   
                 elif strategy == "progressive":
                     xt = pool.current_batch()
                     logits = model(xt)
@@ -554,6 +556,7 @@ def main(cfg: DictConfig):
 
                         if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
                             wandb.log({"train/current_k": current_k}, step=global_step)
+                        wandb.log({"train/lr": optimizer.param_groups[0]["lr"]}, step=global_step)
 
             if global_step % train_cfg.eval_steps == 0:
                 model.eval()

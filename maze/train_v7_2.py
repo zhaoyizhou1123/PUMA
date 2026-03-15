@@ -141,6 +141,64 @@ def mdm_loss(model, input_ids, mask_id: int, prompt_mask: Optional[torch.Tensor]
     loss = ce / num_mask[mask_indices]
     return loss.sum() / B
 
+
+def mdm_loss_train(model, masked_input_ids, input_ids, mask_id: int, prompt_mask: Optional[torch.Tensor] = None, arm_init: bool = False):
+    # sample integer uniformly for each batch from [1,L]
+    # prompt_mask (boolean mask): 1 for prompt
+    # Assume the input_ids are already masked
+    if prompt_mask is None:
+        prompt_mask = torch.zeros_like(masked_input_ids, dtype=torch.bool)
+    device = masked_input_ids.device
+    B, L = masked_input_ids.shape
+    L_eff = L - prompt_mask.sum(dim=1 , keepdim=True)
+    # uniformly sample the number of positions to mask
+    # num_mask = torch.floor(torch.rand(B, 1, device=device) * L_eff.clamp(min=1)).long() + 1
+
+    # # mask correspondent number of tokens for each batch, 0.0 for the prompt indices
+    # scores = torch.rand((B, L), device=device).masked_fill(prompt_mask, float('inf')).argsort(dim=1)
+    # order = scores.argsort(dim=1)
+    # mask_indices = (order < num_mask)
+    # masked_input = torch.where(mask_indices, mask_id, input_ids)
+    # logits = model(masked_input)
+    mask_indices = (masked_input_ids == mask_id)
+    num_mask = mask_indices.sum(dim=1, keepdim=True)
+    logits = model(masked_input_ids)
+
+    # calculate (reweighted) loss
+    num_mask = num_mask.float().expand_as(mask_indices)
+
+    if arm_init:
+        ce = F.cross_entropy(logits[:, :-1, :][mask_indices[:, 1:]], input_ids[:, 1:][mask_indices[:, 1:]], reduction="none")
+    else:
+        ce = F.cross_entropy(logits[mask_indices], input_ids[mask_indices], reduction="none")
+    loss = ce / num_mask[mask_indices]
+    return loss.sum() / B, logits.detach()
+
+def mdm_loss_edit_train(model, masked_input_ids, input_ids, mask_id: int, prompt_mask: Optional[torch.Tensor] = None, arm_init: bool = False):
+    # sample integer uniformly for each batch from [1,L]
+    # prompt_mask (boolean mask): 1 for prompt
+    # Assume the input_ids are already masked
+    if prompt_mask is None:
+        prompt_mask = torch.zeros_like(masked_input_ids, dtype=torch.bool)
+    device = masked_input_ids.device
+    B, L = masked_input_ids.shape
+    L_eff = L - prompt_mask.sum(dim=1 , keepdim=True)
+    L_eff = L_eff.float().expand_as(masked_input_ids)
+    # uniformly sample the number of positions to mask
+    # num_mask = torch.floor(torch.rand(B, 1, device=device) * L_eff.clamp(min=1)).long() + 1
+
+    # # mask correspondent number of tokens for each batch, 0.0 for the prompt indices
+    # scores = torch.rand((B, L), device=device).masked_fill(prompt_mask, float('inf')).argsort(dim=1)
+    # order = scores.argsort(dim=1)
+    # mask_indices = (order < num_mask)
+    # masked_input = torch.where(mask_indices, mask_id, input_ids)
+    # logits = model(masked_input)
+    logits = model(masked_input_ids)
+
+    ce = F.cross_entropy(logits[~prompt_mask], input_ids[~prompt_mask], reduction="none")
+    loss = ce / L_eff[~prompt_mask]
+    return loss.sum() / B, logits.detach()
+
 def arm_loss(
     model,
     input_ids: torch.Tensor,                    # (B, L)
@@ -357,7 +415,8 @@ def main(cfg: DictConfig):
 
     # optimizer and scheduler
     optimizer = optim.AdamW(model.parameters(), lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay)
-    num_training_steps = train_cfg.num_epochs * len(train_loader)
+    num_training_steps = train_cfg.num_epochs * len(train_loader) * train_cfg.K
+    print(f"Total training steps: {num_training_steps}")
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=train_cfg.warmup_steps, num_training_steps=num_training_steps)
     if train_cfg.ema is not None:
         assert 0.0 < train_cfg.ema < 1.0, "EMA decay must be between 0 and 1"
@@ -443,8 +502,8 @@ def main(cfg: DictConfig):
                     eos_id=train_cfg.eos_id,
                 )
             if strategy == "edit_v7":
-                from progressive import PhasedMaskingEditV7
-                return PhasedMaskingEditV7(
+                from progressive import PhasedMaskingEditV6
+                return PhasedMaskingEditV6(
                     train_loader, B, mask_id, K, device, L,
                     mode=train_cfg.mode,
                     confidence_threshold=train_cfg.confidence_threshold,
@@ -472,7 +531,7 @@ def main(cfg: DictConfig):
 
         if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
             pool.reset_loader_iter()
-            steps_per_epoch = len(train_loader)
+            steps_per_epoch = len(train_loader) * train_cfg.K
             iterable = range(steps_per_epoch)
         elif strategy == "standard" or strategy == "arm":
             iterable = train_loader
@@ -495,7 +554,7 @@ def main(cfg: DictConfig):
 
             # to enable flashattention, we do the autocast
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
-                if strategy in ["progressive_edit", "edit_v2", "edit_v3", "edit_v4", "edit_v7"]:
+                if strategy in ["progressive_edit", "edit_v2", "edit_v3", "edit_v4"]:
                     xt = pool.current_batch()
                     # print("xt:", xt)
                     logits = model(xt)
@@ -504,10 +563,22 @@ def main(cfg: DictConfig):
                     # print(loss.shape)
                 elif strategy in ["edit_v5", "edit_v6"]:
                     xt = pool.current_batch()
+                    phase = pool.get_phase()
                     # print("xt:", xt)
                     logits = model(xt)
                     log_probs = F.log_softmax(logits, dim=-1)
-                    loss = mdm_edit_loss_fn_v5(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)                   
+                    loss = mdm_edit_loss_fn_v5(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], phase=phase, arm_init=model_config.predict_next_token) 
+                elif strategy == "edit_v7":
+                    xt = pool.current_batch()
+                    phase = pool.get_phase()
+                    # print("xt:", xt)
+                    assert torch.all(phase == phase[0]), "All samples in the batch must be in the same phase for edit_v7"
+                    if phase[0].item() == 0:
+                        loss, logits = mdm_loss_train(model, xt, pool.x0, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)
+                    elif phase[0].item() == 1:
+                        loss, logits = mdm_loss_edit_train(model, xt, pool.x0, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)
+                    with torch.no_grad():
+                        log_probs = F.log_softmax(logits, dim=-1)
                 elif strategy == "progressive":
                     xt = pool.current_batch()
                     logits = model(xt)
@@ -554,6 +625,7 @@ def main(cfg: DictConfig):
 
                         if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
                             wandb.log({"train/current_k": current_k}, step=global_step)
+                        wandb.log({"train/lr": optimizer.param_groups[0]["lr"]}, step=global_step)
 
             if global_step % train_cfg.eval_steps == 0:
                 model.eval()

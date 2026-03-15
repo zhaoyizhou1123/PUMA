@@ -101,15 +101,20 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
     # sampling hyperparameters
     # xt can include clean tokens
     # if track == True, we return the trace (used for the debugging purpose)
+
+    # To be compatible with multi-step proseco
+    strategy = sampling_cfg.get("strategy", "default")
+    if strategy == "multi_proseco":
+        return mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device, track, arm_init, prompt_mask)
     temperature = sampling_cfg.temperature
     confidence = sampling_cfg.confidence
     unmasking_num = sampling_cfg.unmasking_num
     edit_freq = sampling_cfg.get("edit_freq", -1) # omega
-    edit_step = sampling_cfg.get("edit_step", 1) # S
+    edit_step = sampling_cfg.get("edit_step", 0) # S
     if prompt_mask is None:
         prompt_mask = torch.zeros_like(xt, dtype=torch.bool) # All responses
     if edit_freq > 0:
-        assert edit_step > 0, "edit_step must be positive when edit_freq is set"
+        assert edit_step >=0, "edit_step must be non-negative when edit_freq is set"
 
     # shape
     B, L = xt.shape
@@ -154,11 +159,24 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
             raise NotImplementedError(f"Confidence sampling strategy '{confidence}' not supported")
         
         # update masked tokens by selecting top-k per batch this step
-        for j in range(B):
-            k = min(unmasking_num, int(mask_indices[j].sum().item())) # number of tokens to unmask
-            if k > 0:
-                _, select_indices = torch.topk(unmasking_score[j], k=k)
-                xt[j, select_indices] = torch.argmax(logits_with_noise[j, select_indices], dim = -1)
+        k_max = min(unmasking_num, int(mask_indices.sum(dim=-1).max().item()))
+        
+        if k_max > 0:
+            # 2. Get top-k indices for the entire batch at once
+            _, select_indices = torch.topk(unmasking_score, k=k_max, dim=-1) # Shape: [B, k_max]
+            
+            # 3. Filter invalid selections. 
+            # If a sequence has fewer than k_max masked tokens, topk will grab some 
+            # already-unmasked tokens (score -inf). We identify valid ones using the original mask.
+            valid_selections = mask_indices.gather(1, select_indices) # Shape: [B, k_max]
+            
+            # 4. Create a full [B, L] boolean mask for where updates should occur
+            update_mask = torch.zeros_like(mask_indices)
+            update_mask.scatter_(1, select_indices, valid_selections)
+            
+            # 5. Compute argmax for the whole tensor and apply updates conditionally
+            new_tokens = torch.argmax(logits_with_noise, dim=-1) # Shape: [B, L]
+            xt = torch.where(update_mask, new_tokens, xt)
 
         if track:
             cur = torch.cat([xt_t1, xt], dim=1) if arm_init else xt
@@ -196,7 +214,191 @@ def mdm_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, dev
     xt = torch.where(unmask_indices, yt, xt)
     return xt, logits
     
+def mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, track: bool = False, arm_init: bool = False, prompt_mask: torch.Tensor = None):
+    '''
+    A new evaluation method for our multi step proseco.
+    For each forward pass, replace all clean tokens, and reveal part of the masks
+    '''
+    # sampling hyperparameters
+    # xt can include clean tokens
+    # if track == True, we return the trace (used for the debugging purpose)
+    temperature = sampling_cfg.temperature
+    confidence = sampling_cfg.confidence
+    unmasking_num = sampling_cfg.unmasking_num
+    correction_step = sampling_cfg.get("correction_step", 0) # number of self-correction steps after revealing all tokens
+    if prompt_mask is None:
+        prompt_mask = torch.zeros_like(xt, dtype=torch.bool) # All responses
+    eff_L = (~prompt_mask).sum(dim=1).max().item()
 
+    # shape
+    B, L = xt.shape
+    xt = xt.clone()
+    if track:
+        track_xt = []
+
+    if arm_init:
+        xt_t1, xt = xt[:, :1], xt[:, 1:]
+        L = L - 1
+        eff_L = eff_L - 1
+
+    # Warning: L is prompt + response length, not just response length
+    for i in range((eff_L-1) // unmasking_num + 1 + correction_step):
+        # mask indicies
+        mask_indices = (xt == mask_id)
+
+        # if mask_indices.sum() == 0:
+        #     break
+
+        # calculate logits
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
+            logits = model(torch.cat([xt_t1, xt], dim=1) if arm_init else xt) # [B, L, V]
+
+        if arm_init:
+            logits = logits[:, :-1, :]
+        logits_with_noise = gumbel_softmax(logits, temperature = temperature)
+        p = F.softmax(logits, dim = -1)
+
+        if confidence == "top_k":
+            unmasking_score = torch.where(mask_indices, p.max(dim = -1).values, -float('inf'))
+        elif confidence == "top_k_margin":
+            probs_top_2 = p.topk(k=2, dim=-1).values
+            unmasking_score = torch.where(mask_indices, probs_top_2[..., 0] - probs_top_2[..., 1], -float('inf'))
+        elif confidence == "entropy":
+            entropy = (- p * torch.log(p + 1e-10)).sum(dim = -1)
+            unmasking_score = torch.where(mask_indices, entropy, -float('inf'))
+        elif confidence == "random":
+            raise NotImplementedError("Random confidence sampling strategy yet to be implemented")
+        else:
+            raise NotImplementedError(f"Confidence sampling strategy '{confidence}' not supported")
+        
+        # update masked tokens by selecting top-k per batch this step
+        # 1. Find the maximum number of tokens to unmask across the batch
+        k_max = min(unmasking_num, int(mask_indices.sum(dim=-1).max().item()))
+        
+        update_mask = torch.zeros_like(mask_indices)
+        if k_max > 0:
+            # 2. Get top-k indices for the entire batch at once
+            _, select_indices = torch.topk(unmasking_score, k=k_max, dim=-1) # Shape: [B, k_max]
+            
+            # 3. Filter invalid selections. 
+            # If a sequence has fewer than k_max masked tokens, topk will grab some 
+            # already-unmasked tokens (score -inf). We identify valid ones using the original mask.
+            valid_selections = mask_indices.gather(1, select_indices) # Shape: [B, k_max]
+            
+            # 4. Create a full [B, L] boolean mask for where updates should occur
+            update_mask.scatter_(1, select_indices, valid_selections)
+            
+            # 5. Compute argmax for the whole tensor and apply updates conditionally
+            new_tokens = torch.argmax(logits_with_noise, dim=-1) # Shape: [B, L]
+
+        # update all revealed tokens, and part of the masks
+        reveal_indices = (~mask_indices) & (~prompt_mask) # only reveal the response part, keep the prompt unchanged
+        xt = torch.where(update_mask | reveal_indices, new_tokens, xt)
+
+        if track:
+            cur = torch.cat([xt_t1, xt], dim=1) if arm_init else xt
+            track_xt.append(cur.clone().detach().cpu())
+    if arm_init:
+        xt = torch.cat([xt_t1, xt], dim=1)
+    if track:
+        track_xt = torch.stack(track_xt, dim=0) # (T, B, L)
+        print(track_xt.shape)
+        return xt, track_xt
+    else:
+        return xt
+
+# def mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, track: bool = False, arm_init: bool = False, prompt_mask: torch.Tensor = None):
+#     '''
+#     A new evaluation method for our multi step proseco.
+#     For each forward pass, replace all clean tokens, and reveal part of the masks
+#     '''
+#     # sampling hyperparameters
+#     # xt can include clean tokens
+#     # if track == True, we return the trace (used for the debugging purpose)
+#     temperature = sampling_cfg.temperature
+#     confidence = sampling_cfg.confidence
+#     unmasking_num = sampling_cfg.unmasking_num
+#     correction_step = sampling_cfg.get("correction_step", 0) # number of self-correction steps after revealing all tokens
+#     if prompt_mask is None:
+#         prompt_mask = torch.zeros_like(xt, dtype=torch.bool) # All responses
+
+#     # shape
+#     B, L = xt.shape
+#     xt = xt.clone()
+#     if track:
+#         track_xt = []
+
+#     if arm_init:
+#         xt_t1, xt = xt[:, :1], xt[:, 1:]
+#         L = L - 1
+
+#     for i in range(2*((L-1) // unmasking_num + 1 + correction_step)):
+#         # mask indicies
+#         mask_indices = (xt == mask_id)
+
+#         if mask_indices.sum() == 0:
+#             break
+
+#         # calculate logits
+#         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
+#             logits = model(torch.cat([xt_t1, xt], dim=1) if arm_init else xt) # [B, L, V]
+
+#         if arm_init:
+#             logits = logits[:, :-1, :]
+#         logits_with_noise = gumbel_softmax(logits, temperature = temperature)
+#         p = F.softmax(logits, dim = -1)
+
+#         if confidence == "top_k":
+#             unmasking_score = torch.where(mask_indices, p.max(dim = -1).values, -float('inf'))
+#         elif confidence == "top_k_margin":
+#             probs_top_2 = p.topk(k=2, dim=-1).values
+#             unmasking_score = torch.where(mask_indices, probs_top_2[..., 0] - probs_top_2[..., 1], -float('inf'))
+#         elif confidence == "entropy":
+#             entropy = (- p * torch.log(p + 1e-10)).sum(dim = -1)
+#             unmasking_score = torch.where(mask_indices, entropy, -float('inf'))
+#         elif confidence == "random":
+#             raise NotImplementedError("Random confidence sampling strategy yet to be implemented")
+#         else:
+#             raise NotImplementedError(f"Confidence sampling strategy '{confidence}' not supported")
+        
+#         # update masked tokens by selecting top-k per batch this step
+#         # 1. Find the maximum number of tokens to unmask across the batch
+#         if i % 2 == 0: # decoding step
+#             k_max = min(unmasking_num, int(mask_indices.sum(dim=-1).max().item()))
+            
+#             update_mask = torch.zeros_like(mask_indices)
+#             if k_max > 0:
+#                 # 2. Get top-k indices for the entire batch at once
+#                 _, select_indices = torch.topk(unmasking_score, k=k_max, dim=-1) # Shape: [B, k_max]
+                
+#                 # 3. Filter invalid selections. 
+#                 # If a sequence has fewer than k_max masked tokens, topk will grab some 
+#                 # already-unmasked tokens (score -inf). We identify valid ones using the original mask.
+#                 valid_selections = mask_indices.gather(1, select_indices) # Shape: [B, k_max]
+                
+#                 # 4. Create a full [B, L] boolean mask for where updates should occur
+#                 update_mask.scatter_(1, select_indices, valid_selections)
+                
+#                 # 5. Compute argmax for the whole tensor and apply updates conditionally
+#                 new_tokens = torch.argmax(logits_with_noise, dim=-1) # Shape: [B, L]
+
+#             # update all revealed tokens, and part of the masks
+#             # xt = torch.where(update_mask | (~mask_indices), new_tokens, xt)
+#             xt = torch.where(update_mask, new_tokens, xt)
+#         else: # correction step, update all tokens
+#             new_tokens = torch.argmax(logits_with_noise, dim=-1) # Shape: [B, L]
+#             xt = torch.where(~prompt_mask, new_tokens, xt) # only update the response part, keep the prompt unchanged
+
+#         if track:
+#             cur = torch.cat([xt_t1, xt], dim=1) if arm_init else xt
+#             track_xt.append(cur.clone().detach().cpu())
+#     if arm_init:
+#         xt = torch.cat([xt_t1, xt], dim=1)
+#     if track:
+#         track_xt = torch.stack(track_xt, dim=0) # (T, B, L)
+#         return xt, track_xt
+#     else:
+#         return xt
 
 @torch.no_grad()
 def mdm_sampling_block(model, xt, block_size, mask_id, sampling_cfg, device: torch.device = None):
