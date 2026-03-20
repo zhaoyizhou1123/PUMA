@@ -357,7 +357,7 @@ def main(cfg: DictConfig):
 
     # optimizer and scheduler
     optimizer = optim.AdamW(model.parameters(), lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay)
-    num_training_steps = train_cfg.num_epochs * len(train_loader)
+    num_training_steps = train_cfg.num_epochs * len(train_loader) * train_cfg.K
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=train_cfg.warmup_steps, num_training_steps=num_training_steps)
     if train_cfg.ema is not None:
         assert 0.0 < train_cfg.ema < 1.0, "EMA decay must be between 0 and 1"
@@ -488,7 +488,7 @@ def main(cfg: DictConfig):
 
         if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
             pool.reset_loader_iter()
-            steps_per_epoch = len(train_loader)
+            steps_per_epoch = len(train_loader) * train_cfg.K
             iterable = range(steps_per_epoch)
         elif strategy == "standard" or strategy == "arm":
             iterable = train_loader

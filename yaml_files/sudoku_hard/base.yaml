@@ -53,6 +53,6 @@ data:
 
 wandb:
   wandb: true
-  project: "sudoku_hard-pretraining"
+  project: "sudoku_hard-pretraining-corrected"
   name: "${training.strategy}-s${data.seed}"
   entity: "your-entity-here"

@@ -12,11 +12,12 @@ torchrun \
   -m maze.eval --config-path "../yaml_files/sudoku_hard" --config-name base \
      training.strategy=progressive_edit \
      data.seed=123 \
-     +validation.ckpt_path=ckpts/sudoku_hard-pretraining/K2_edit_v3_3_s123_date2026-03-15-15-47/step20000.pt \
+     +validation.ckpt_path=ckpts/sudoku_hard-pretraining/K2_edit_v3_3_s123_date2026-03-15-15-47/step30000.pt \
+     +validation.sampling.strategy=multi_proseco_buggy \
      validation.sampling.unmasking_num=[1] \
-     +validation.sampling.edit_freq=[3] \
-     +validation.sampling.edit_step=[4] \
+     +validation.sampling.correction_step=0 \
      validation.track=False
+
 
 # torchrun \
 #   --nnodes=1 \

@@ -533,6 +533,134 @@ class PhasedMaskingEditV3(PhasedMasking):
 
         self.state['t'] += 1 # update the time step
 
+class PhasedMaskingEditV3_2(PhasedMasking):
+    '''
+    replace clean tokens (including prompt tokens) during update
+    '''
+    @torch.no_grad()
+    def update_with_logits(self, log_probs: torch.Tensor):
+        """
+        build the next batch of sequences following our method
+        """
+        B, L, V = log_probs.shape
+        device = self.device
+
+        # stages for the current update
+        phase_next = (self.state['phase'] + 1) % self.K
+        replace = (phase_next == 0)
+
+        # replace all tokens including masks. For those in the last phase, they will be refilled later.
+        xt = self.xt
+        pred_token = log_probs.argmax(dim = 2) # [B, L]
+        xt = pred_token # directly replace all tokens with current prediction, including prompt tokens. We hope it can surprisingly improve acc on sudoku hard
+
+        if self.mode in ["confidence_collapse"]:
+            tau = math.log(self.confidence_threshold)
+            p = log_probs.max(dim = 2)[0]
+            update_unmask = (p > tau) & (xt == self.mask_id) & (~ self.state['prompt_mask'])
+            xt = torch.where(update_unmask, self.x0, xt)
+
+            # re-calculate the phase
+            phase_next = self.calculate_phase(xt)
+
+        self.xt = xt
+        self.state['phase'] = phase_next
+
+        
+        # if a seq goes through all stages, we refill
+        n_new = int(replace.sum().item())
+        if n_new > 0:
+            idx = replace.nonzero(as_tuple = False).squeeze(1) # [n_new]
+            stages = torch.zeros(n_new, device=device, dtype=torch.long)
+            new_x0, new_xt, new_masks, new_L_eff = self._refill_pool(n_new, stages)
+            self.x0[idx] = new_x0
+            self.xt[idx] = new_xt
+            self.state['prompt_mask'][idx] = new_masks
+            self.state['L_eff'][idx] = new_L_eff
+            self.state['phase'][idx] = 0
+
+        self.state['t'] += 1 # update the time step
+
+class PhasedMaskingEditV3_3(PhasedMasking):
+    '''
+    replace clean tokens (including prompt tokens) during update
+    Initialize with random masking, not following a specific phase
+    '''
+
+    # Same as V4
+    @torch.no_grad()
+    def _refill_pool(self, n: int, stages: torch.Tensor):
+        """
+        initialize the pool of sequences
+         * used at the very first training batch and refill
+         * for the first step, n = B, for the refill, n = n_new
+        """
+        L, device = self.L, self.device
+        new_x0, new_masks = self._get_new_seq(n)
+
+        # per-seq effective length (# non-prompt tokens)
+        new_L_eff = (~new_masks).sum(dim = 1).long() # [n]
+        # ratio = self._sample_ratio(stages) # [n]
+        ratio = torch.rand(n, device=device) # sample from [0,1]
+        u0 = self._sample_target_unmasked(ratio, new_L_eff) # [n]
+
+        # contstruct xt, while maintaining prompts
+        new_xt = torch.full_like(new_x0, self.mask_id)
+        new_xt = torch.where(new_masks, new_x0, new_xt)
+        k_max = int(u0.max().item())
+        if k_max > 0:
+            # the score is random for the first step, setting -inf for prompt positions
+            rand_score = torch.rand(n , L, device=device, dtype=torch.float)
+            rand_score = torch.where(new_masks, torch.finfo(rand_score.dtype).min, rand_score)
+            new_xt = unmask_from_scores(rand_score, u0, new_x0, new_xt)
+
+        return new_x0, new_xt, new_masks, new_L_eff
+
+    @torch.no_grad()
+    def update_with_logits(self, log_probs: torch.Tensor):
+        """
+        build the next batch of sequences following our method
+        """
+        B, L, V = log_probs.shape
+        device = self.device
+
+        # stages for the current update
+        phase_next = (self.state['phase'] + 1) % self.K
+        replace = (phase_next == 0)
+
+        # replace all tokens including masks. For those in the last phase, they will be refilled later.
+        xt = self.xt
+        pred_token = log_probs.argmax(dim = 2) # [B, L]
+        xt = pred_token # directly replace all tokens with current prediction, including prompt tokens. We hope it can surprisingly improve acc on sudoku hard
+
+        if self.mode in ["confidence_collapse"]:
+            tau = math.log(self.confidence_threshold)
+            p = log_probs.max(dim = 2)[0]
+            update_unmask = (p > tau) & (xt == self.mask_id) & (~ self.state['prompt_mask'])
+            xt = torch.where(update_unmask, self.x0, xt)
+
+            # re-calculate the phase
+            phase_next = self.calculate_phase(xt)
+
+        self.xt = xt
+        self.state['phase'] = phase_next
+
+        
+        # if a seq goes through all stages, we refill
+        n_new = int(replace.sum().item())
+        if n_new > 0:
+            idx = replace.nonzero(as_tuple = False).squeeze(1) # [n_new]
+            stages = torch.zeros(n_new, device=device, dtype=torch.long)
+            new_x0, new_xt, new_masks, new_L_eff = self._refill_pool(n_new, stages)
+            self.x0[idx] = new_x0
+            self.xt[idx] = new_xt
+            self.state['prompt_mask'][idx] = new_masks
+            self.state['L_eff'][idx] = new_L_eff
+            self.state['phase'][idx] = 0
+
+        self.state['t'] += 1 # update the time step
+
+
 class PhasedMaskingEditV4(PhasedMasking):
     '''
     Two stages only. First random masking, second reveal all.

@@ -2,9 +2,8 @@
 export CUDA_VISIBLE_DEVICES=4
 
 MASTER_ADDR=localhost
-MASTER_PORT=29501
+MASTER_PORT=29500
 
-for K in 8; do
 torchrun \
   --nnodes=1 \
   --nproc_per_node=1 \
@@ -15,11 +14,8 @@ torchrun \
      training.strategy=progressive_edit \
      training.eval_steps=5000 \
      training.save_steps=5000 \
-     training.K=$K \
-     validation.sampling.unmasking_num=[9] \
+     validation.sampling.unmasking_num=[1] \
      +validation.sampling.edit_freq=[3] \
      +validation.sampling.edit_step=[4] \
      validation.track=False \
-     data.seed=123 \
-     wandb.name=K${K}_progressive_edit_seed123
-done
+     data.seed=123

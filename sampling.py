@@ -104,7 +104,7 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
 
     # To be compatible with multi-step proseco
     strategy = sampling_cfg.get("strategy", "default")
-    if strategy == "multi_proseco":
+    if strategy in ["multi_proseco", "multi_proseco_buggy"]:
         return mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device, track, arm_init, prompt_mask)
     temperature = sampling_cfg.temperature
     confidence = sampling_cfg.confidence
@@ -226,6 +226,7 @@ def mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device: torch.d
     confidence = sampling_cfg.confidence
     unmasking_num = sampling_cfg.unmasking_num
     correction_step = sampling_cfg.get("correction_step", 0) # number of self-correction steps after revealing all tokens
+    strategy = sampling_cfg.get("strategy", "default")
     if prompt_mask is None:
         prompt_mask = torch.zeros_like(xt, dtype=torch.bool) # All responses
     eff_L = (~prompt_mask).sum(dim=1).max().item()
@@ -234,7 +235,7 @@ def mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device: torch.d
     B, L = xt.shape
     xt = xt.clone()
     if track:
-        track_xt = []
+        track_xt = [xt.clone().detach().cpu()]
 
     if arm_init:
         xt_t1, xt = xt[:, :1], xt[:, 1:]
@@ -292,7 +293,12 @@ def mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device: torch.d
             new_tokens = torch.argmax(logits_with_noise, dim=-1) # Shape: [B, L]
 
         # update all revealed tokens, and part of the masks
-        reveal_indices = (~mask_indices) & (~prompt_mask) # only reveal the response part, keep the prompt unchanged
+        if strategy == "multi_proseco":
+            reveal_indices = (~mask_indices) & (~prompt_mask) # only reveal the response part, keep the prompt unchanged
+        elif strategy == "multi_proseco_buggy": # "multi_proseco_buggy"
+            reveal_indices = prompt_mask | (~mask_indices) # update prompts and all the revealed tokens.
+        else:
+            raise NotImplementedError(f"Sampling strategy {strategy} is not supported. Expected 'multi_proseco' or 'multi_proseco_buggy'.")
         xt = torch.where(update_mask | reveal_indices, new_tokens, xt)
 
         if track:
