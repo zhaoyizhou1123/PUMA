@@ -23,6 +23,7 @@ from model.ema import ExponentialMovingAverage, save_ema_snapshot, save_model_sn
 from progressive import PhasedMasking, mdm_loss_fn
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from eval.gsm8k_eval import evaluate_ddp_gsm8k
+import contextlib
 
 
 def setup_ddp():
@@ -146,6 +147,8 @@ def proseco_loss(model, input_ids, logits: torch.Tensor, num_mask: torch.Tensor,
     # next we compute self-correction loss
     with torch.no_grad():
         correction_input = torch.argmax(logits, dim=-1)
+    # Important fix: Only responses should be replaced
+    correction_input = torch.where(prompt_mask, input_ids, correction_input)
     correction_logits = model(correction_input)
     correction_loss = F.cross_entropy(correction_logits[~prompt_mask], input_ids[~prompt_mask], reduction="none") # (total response tokens,)
     correction_loss = correction_loss / num_mask[~prompt_mask]
@@ -290,7 +293,8 @@ def main(cfg: DictConfig):
 
     # ckpt dir
     datetime_str = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-    ckpt_dir = f"ckpts/date={datetime_str}"
+    ckpt_root = cfg.training.get("ckpt_root", "ckpts")
+    ckpt_dir = f"{ckpt_root}/{cfg.wandb.project}/{cfg.wandb.name}_date{datetime_str}"
     os.makedirs(ckpt_dir, exist_ok=True)
     if is_main:
         print(f"Checkpoints will be saved to: {ckpt_dir}")
@@ -394,10 +398,10 @@ def main(cfg: DictConfig):
                 print(f"Step {step}: K={K}")
 
         # intialize the pool
-        B = train_cfg.batch_size
+        B = data_cfg.training.per_gpu_batch_size
         L = model_config.max_position
         def make_pool(K):
-            B = train_cfg.batch_size
+            B = data_cfg.training.per_gpu_batch_size
             L = model_config.max_position
             return PhasedMasking(
                 train_loader, B, mask_id, K, device, L,
@@ -473,7 +477,12 @@ def main(cfg: DictConfig):
                     input_ids = batch["labels"].to(device)
                     prompt_mask = batch["prompt_mask"].to(device) if "prompt_mask" in batch else None
                     loss, logits, num_mask = mdm_loss(model, input_ids, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)
-                    loss.backward()
+                    # Backward 1: Accumulate locally, do NOT sync across GPUs
+                    # Fall back to a nullcontext if running on a single GPU without DDP
+                    sync_context = model.no_sync() if isinstance(model, DDP) else contextlib.nullcontext()                    
+                    with sync_context:
+                        loss.backward()
+
                     correction_loss = proseco_loss(model, input_ids, logits, num_mask, mask_id, prompt_mask = prompt_mask, arm_init=model_config.predict_next_token)                    
                     correction_loss.backward()
                     loss = loss + correction_loss
@@ -498,13 +507,15 @@ def main(cfg: DictConfig):
                 if global_step % train_cfg.logging_steps == 0:
                     print(f"Epoch {epoch+1}, Step {global_step}, Loss {loss.item()}")
                     if cfg.wandb.wandb:
-                        wandb.log({"loss": loss.item()}, step=global_step)
+                        wandb.log({"train/loss": loss.item()}, step=global_step)
 
                         gn = grad_norm(model.parameters())
-                        wandb.log({"grad_norm": gn}, step=global_step)
+                        wandb.log({"train/grad_norm": gn}, step=global_step)
 
                         if strategy == "progressive":
-                            wandb.log({"current_k": current_k}, step=global_step)
+                            wandb.log({"train/current_k": current_k}, step=global_step)
+
+                        wandb.log({"train/lr": optimizer.param_groups[0]["lr"]}, step=global_step)
 
             if global_step % train_cfg.eval_steps == 0:
                 model.eval()
@@ -536,14 +547,14 @@ def main(cfg: DictConfig):
                         print(f"Epoch {epoch+1}, Step {global_step}, Validation Accuracy {key}: {value}")
                         if cfg.wandb.wandb:
                             if train_cfg.ema is not None:
-                                wandb.log({"ema_val_acc_" + key: value}, step=global_step)
+                                wandb.log({"ema_test_acc/" + key: value}, step=global_step)
                             else:
-                                wandb.log({"val_acc_" + key: value}, step=global_step)
+                                wandb.log({"test_acc/" + key: value}, step=global_step)
                     
                     # validation loss logging
                     print(f"Epoch {epoch+1}, Step {global_step}, Validation Loss: {val_loss}")
                     if cfg.wandb.wandb:
-                        wandb.log({"val_loss": val_loss}, step=global_step)
+                        wandb.log({"val/val_loss": val_loss}, step=global_step)
 
                     if is_main and global_step % train_cfg.save_steps == 0 and train_cfg.ema is not None:
                         saved_path = save_ema_snapshot(ckpt_dir, model, ema, cfg, epoch, global_step, val_loss, val_acc_dict)

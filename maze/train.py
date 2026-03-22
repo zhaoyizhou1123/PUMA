@@ -20,7 +20,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import get_cosine_schedule_with_warmup
 from omegaconf import OmegaConf, DictConfig, ListConfig, open_dict
 from model.ema import ExponentialMovingAverage, save_ema_snapshot, save_model_snapshot
-from progressive import PhasedMaskingEdit, mdm_edit_loss_fn, mdm_loss_fn
+from progressive import PhasedMaskingEdit, PhasedMaskingEditV2, PhasedMasking, mdm_edit_loss_fn, mdm_loss_fn, PhasedMaskingEditV3, mdm_edit_loss_fn_v5
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from eval.gsm8k_eval import evaluate_ddp_gsm8k
 
@@ -203,7 +203,7 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
                 if strategy == "arm":
                     loss = arm_loss(model, x0, eos_id=eos_id, prompt_mask=pm)
-                elif strategy in ["progressive_edit"]:
+                elif strategy in ["progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
                     loss = mdm_loss_edit(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
                 elif strategy in ["standard", "progressive"]:
                     loss = mdm_loss(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
@@ -279,7 +279,7 @@ def main(cfg: DictConfig):
 
     # ckpt dir
     datetime_str = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-    ckpt_dir = f"ckpts/date={datetime_str}"
+    ckpt_dir = f"ckpts/{cfg.wandb.project}/{cfg.wandb.name}_date{datetime_str}"
     os.makedirs(ckpt_dir, exist_ok=True)
     if is_main:
         print(f"Checkpoints will be saved to: {ckpt_dir}")
@@ -370,7 +370,7 @@ def main(cfg: DictConfig):
     strategy = train_cfg.strategy
     # k schedule for progressive_edit unmasking. If None use fixed K. If "linear", linearly increase the unmasking steps from 1 to K over the training steps.
     # If a list of integers, use the list as the k_steps. If an integer, use constant interval increase.
-    if strategy in ["progressive", "progressive_edit"]: # puma, ours
+    if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]: # puma, ours
         k_schedule = parse_k_schedule_increasing(getattr(train_cfg, "k_schedule", None))
         if len(k_schedule) == 0:
             k_schedule = [(train_cfg.K, 0)]
@@ -383,17 +383,90 @@ def main(cfg: DictConfig):
                 print(f"Step {step}: K={K}")
 
         # intialize the pool
-        B = train_cfg.batch_size
+        B = data_cfg.training.per_gpu_batch_size
         L = model_config.max_position
         def make_pool(K):
-            B = train_cfg.batch_size
+            B = data_cfg.training.per_gpu_batch_size
             L = model_config.max_position
-            return PhasedMaskingEdit(
-                train_loader, B, mask_id, K, device, L,
-                mode=train_cfg.mode,
-                confidence_threshold=train_cfg.confidence_threshold,
-                eos_id=train_cfg.eos_id,
-            )
+            
+            if strategy == "progressive":
+                return PhasedMasking(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "progressive_edit":
+                return PhasedMaskingEdit(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v2":
+                return PhasedMaskingEditV2(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v3":
+                return PhasedMaskingEditV3(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v3_2":
+                from progressive import PhasedMaskingEditV3_2
+                return PhasedMaskingEditV3_2(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v3_3":
+                from progressive import PhasedMaskingEditV3_3
+                return PhasedMaskingEditV3_3(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v4":
+                from progressive import PhasedMaskingEditV4
+                return PhasedMaskingEditV4(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v5":
+                # still use v4 
+                from progressive import PhasedMaskingEditV4
+                return PhasedMaskingEditV4(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v6":
+                from progressive import PhasedMaskingEditV6
+                return PhasedMaskingEditV6(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v7":
+                from progressive import PhasedMaskingEditV7
+                return PhasedMaskingEditV7(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            raise ValueError(f"Unknown strategy: {strategy}")
         pool = make_pool(current_k)
         next_k_idx = 1
 
@@ -413,7 +486,7 @@ def main(cfg: DictConfig):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
-        if strategy in ["progressive", "progressive_edit"]:
+        if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
             pool.reset_loader_iter()
             steps_per_epoch = len(train_loader)
             iterable = range(steps_per_epoch)
@@ -427,7 +500,7 @@ def main(cfg: DictConfig):
 
         for itr in pbar:
             # update current K if using k schedule
-            if strategy in ["progressive", "progressive_edit"] and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
+            if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"] and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
                 current_k = k_schedule[next_k_idx][0]
                 if is_main:
                     print(f"[K-SWITCH] Step {global_step}: K={current_k}")
@@ -438,13 +511,19 @@ def main(cfg: DictConfig):
 
             # to enable flashattention, we do the autocast
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
-                if strategy == "progressive_edit":
+                if strategy in ["progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v7"]:
                     xt = pool.current_batch()
                     # print("xt:", xt)
                     logits = model(xt)
                     log_probs = F.log_softmax(logits, dim=-1)
                     loss = mdm_edit_loss_fn(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)
                     # print(loss.shape)
+                elif strategy in ["edit_v5", "edit_v6"]:
+                    xt = pool.current_batch()
+                    # print("xt:", xt)
+                    logits = model(xt)
+                    log_probs = F.log_softmax(logits, dim=-1)
+                    loss = mdm_edit_loss_fn_v5(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)                   
                 elif strategy == "progressive":
                     xt = pool.current_batch()
                     logits = model(xt)
@@ -475,7 +554,7 @@ def main(cfg: DictConfig):
             global_step += 1
             
             # update a new seq
-            if strategy in ["progressive", "progressive_edit"]:
+            if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
                 pool.update_with_logits(log_probs)
 
             if is_main:
@@ -489,8 +568,10 @@ def main(cfg: DictConfig):
                         gn = grad_norm(model.parameters())
                         wandb.log({"train/grad_norm": gn}, step=global_step)
 
-                        if strategy in ["progressive", "progressive_edit"]:
+                        if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
                             wandb.log({"train/current_k": current_k}, step=global_step)
+
+                        wandb.log({"train/lr": optimizer.param_groups[0]["lr"]}, step=global_step)
 
             if global_step % train_cfg.eval_steps == 0:
                 model.eval()

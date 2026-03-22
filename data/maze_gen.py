@@ -329,7 +329,7 @@ class MazeGenerator:
         optimal_path_len = len(optimal_actions) // 2
         if max_path_len is not None:
             if optimal_path_len > max_path_len:
-                print(f"Warning: Maze skipped due to optimal path length {optimal_path_len} exceeding max_path_len {max_path_len}")
+                # print(f"Warning: Maze skipped due to optimal path length {optimal_path_len} exceeding max_path_len {max_path_len}")
                 return None
             if optimal_path_len < max_path_len:
                 # Pad the path with the last coordinate (goal) to reach max_path_len
@@ -504,8 +504,8 @@ if __name__ == "__main__":
     # print("=" * 50)
     # print("示例1: 单个迷宫的文本序列生成")
     # print("=" * 50)
-    # maze = MazeGenerator(size=7, seed=42)
-    # grid = maze.generate()
+    # maze = MazeGenerator(size=17, seed=20)
+    # grid = maze.generate(algorithm='dfs')
     # print("Grid:", grid)
     # maze.render_ascii()
     
@@ -523,11 +523,12 @@ if __name__ == "__main__":
     dataset_gen = DatasetGenerator(
         size=17,
         seed=42,
-        algorithm='prim',
+        algorithm='dfs',
         num_episodes=1000000,
-        save_dir='./data/maze17x17'
+        save_dir='./data/maze17x17_dfs'
     )
-    train_data, val_data, metadata = dataset_gen.generate_tokenized_training_data(val_ratio=0.001, max_path_len = 50)
+    # TODO! We should consider padding the prompt
+    train_data, val_data, metadata = dataset_gen.generate_tokenized_training_data(val_ratio=0.001, max_path_len = 100)
     
     # 显示第一条训练数据的示例
     if train_data:

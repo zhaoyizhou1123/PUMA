@@ -90,7 +90,7 @@ def split_maze(data_dir: str, val_ratio: float = 0.001, seed: int = 2025):
 
 
 if __name__ == "__main__":
-    data_dir = "data/maze17x17"
+    data_dir = "data/maze17x17_dfs"
     train_data, val_data = split_maze(data_dir)
     print(len(train_data), len(val_data))
     print(val_data[0])

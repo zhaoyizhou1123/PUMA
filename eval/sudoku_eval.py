@@ -70,10 +70,10 @@ def verify_sudoku(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     target: [B, 162] where target[:, :81] are clues/condition, target[:, 81:] is ground-truth solution
     returns: [B] bool
     """
-    cond = pred[:, :81]
+    cond = target[:, :81]
     sol  = pred[:, 81:]
 
-    clue_ok = ((cond == 0) | (sol == cond)).any(dim=1)   # [B]
+    clue_ok = ((cond == 0) | (sol == cond)).all(dim=1)   # [B]
     sudoku_ok = sudoku_check(sol)                        # [B]
 
     return clue_ok & sudoku_ok 
