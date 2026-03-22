@@ -1,4 +1,4 @@
-grid_size: 3  # n; sets model.vocab_size = n^2+2, model.max_position = 2*n^4, data.mask_id = n^2+1
+grid_size: 4  # n; sets model.vocab_size = n^2+2, model.max_position = 2*n^4, data.mask_id = n^2+1
 
 model:
   hidden_size: 256
@@ -10,14 +10,14 @@ model:
   dropout: 0.0
 
 training:
-  strategy: "progressive"
+  strategy: "progressive_edit"
   confidence_threshold: 0.9
   mode: "standard" # [standard, x0, mixed]
   K: 8
   data_ratio: 1.0
   learning_rate: 3e-4
   weight_decay: 0.01
-  max_steps: 500000
+  max_steps: 2000000
   num_epochs: 6
   max_grad_norm: 1.0
   batch_size: 128
@@ -30,7 +30,7 @@ training:
   eos_id: null
 
 validation:
-  val_dir: "data/sudoku_new"
+  val_dir: "data/sudoku_n4"
   ratio: 0.01
   sampling:
     temperature: 0.0
@@ -42,7 +42,7 @@ validation:
 
 data:
   dataset: "sudoku"
-  data_dir: "data/sudoku_new"
+  data_dir: "data/sudoku_n4"
   sudoku_type: "new"
   val_ratio: 0.05
   seed: 123
@@ -54,5 +54,5 @@ data:
 wandb:
   wandb: true
   project: "puma-mdm-pretraining"
-  name: "sudoku-puma-n3-bs128-s${data.seed}"
+  name: "sudoku-puma-edit-n4-bs32-s${data.seed}"
   entity: "zw2700"

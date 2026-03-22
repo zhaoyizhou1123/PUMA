@@ -238,10 +238,12 @@ def main(cfg: DictConfig):
 
     # ckpt dir
     datetime_str = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-    ckpt_dir = f"ckpts/date={datetime_str}"
-    os.makedirs(ckpt_dir, exist_ok=True)
-    if is_main:
-        print(f"Checkpoints will be saved to: {ckpt_dir}")
+    save_checkpoints = OmegaConf.select(cfg, "training.save_checkpoints", default=True)
+    ckpt_dir = f"ckpts/date={datetime_str}" if save_checkpoints else None
+    if save_checkpoints:
+        os.makedirs(ckpt_dir, exist_ok=True)
+        if is_main:
+            print(f"Checkpoints will be saved to: {ckpt_dir}")
 
     if cfg.validation.get("track", False):
         track_dir = f"track/date={datetime_str}"
@@ -316,7 +318,11 @@ def main(cfg: DictConfig):
 
     # optimizer and scheduler
     optimizer = optim.AdamW(model.parameters(), lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay)
-    num_training_steps = train_cfg.num_epochs * len(train_loader)
+    num_training_steps = getattr(train_cfg, "max_steps", None)
+    if num_training_steps is None:
+        num_training_steps = train_cfg.num_epochs * len(train_loader)
+    assert num_training_steps > 0, "training.max_steps must be positive"
+    max_epochs = max(1, (num_training_steps + len(train_loader) - 1) // len(train_loader))
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=train_cfg.warmup_steps, num_training_steps=num_training_steps)
     if train_cfg.ema is not None:
         assert 0.0 < train_cfg.ema < 1.0, "EMA decay must be between 0 and 1"
@@ -366,7 +372,7 @@ def main(cfg: DictConfig):
         wandb.init(project=cfg.wandb.project, name=cfg.wandb.name, config=OmegaConf.to_container(cfg, resolve=True))
 
 
-    for epoch in range(train_cfg.num_epochs):
+    for epoch in range(max_epochs):
         model.train()
 
         if train_sampler is not None:
@@ -385,6 +391,8 @@ def main(cfg: DictConfig):
             pbar = iterable
 
         for itr in pbar:
+            if global_step >= num_training_steps:
+                break
             # update current K if using k schedule
             if strategy == "progressive_edit" and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
                 current_k = k_schedule[next_k_idx][0]
@@ -485,12 +493,12 @@ def main(cfg: DictConfig):
                     if cfg.wandb.wandb:
                         wandb.log({"val_loss": val_loss}, step=global_step)
 
-                    if is_main and global_step % train_cfg.save_steps == 0 and train_cfg.ema is not None:
+                    if save_checkpoints and is_main and global_step % train_cfg.save_steps == 0 and train_cfg.ema is not None:
                         saved_path = save_ema_snapshot(ckpt_dir, model, ema, cfg, epoch, global_step, val_loss, val_acc_dict)
                         if saved_path is not None:
                             print(f"EMA Model saved to: {saved_path}")
 
-                    if is_main and global_step % train_cfg.save_steps == 0:
+                    if save_checkpoints and is_main and global_step % train_cfg.save_steps == 0:
                         # save non-EMA snapshot
                         saved_path = save_model_snapshot(
                             ckpt_dir, model, cfg, epoch, global_step,
@@ -501,6 +509,15 @@ def main(cfg: DictConfig):
                             print(f"Model saved to: {saved_path}")
                 
                 model.train()
+
+            if global_step >= num_training_steps:
+                break
+
+            if global_step >= num_training_steps:
+                break
+
+        if global_step >= num_training_steps:
+            break
     
     if cfg.wandb.wandb and is_main:
         wandb.finish()
@@ -509,8 +526,23 @@ def main(cfg: DictConfig):
         dist.destroy_process_group()
 
 
+def resolve_sudoku_grid_size(cfg):
+    """If cfg.grid_size is set, compute and fill in n-dependent sudoku config fields."""
+    if OmegaConf.select(cfg, "grid_size") is None:
+        return cfg
+    n = cfg.grid_size
+    n2 = n ** 2
+    n4 = n ** 4
+    cfg = OmegaConf.to_container(cfg, resolve=True)
+    cfg["model"]["vocab_size"] = n2 + 2
+    cfg["model"]["max_position"] = 2 * n4
+    cfg["data"]["mask_id"] = n2 + 1
+    return OmegaConf.create(cfg)
+
+
 if __name__ == "__main__":
     args = parse_args()
     cfg_path = args.cfg
     cfg = OmegaConf.load(cfg_path)
+    cfg = resolve_sudoku_grid_size(cfg)
     main(cfg)

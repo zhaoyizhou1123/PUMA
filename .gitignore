@@ -1,3 +1,4 @@
+venv/
 __pycache__/
 *.npy
 *.jsonl
@@ -7,3 +8,4 @@ debug*
 ckpts/
 wandb/
 outputs
+logs/

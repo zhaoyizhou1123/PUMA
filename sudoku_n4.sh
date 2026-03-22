@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=puma_sudoku
 #SBATCH --partition=general
-#SBATCH --output=logs/train_sudoku_%j.log
-#SBATCH --error=logs/train_sudoku_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --output=logs/train_sudoku_n4_%j.log
+#SBATCH --error=logs/train_sudoku_n4_%j.err
+#SBATCH --time=48:00:00
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=1
+#SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-gpu=8
+#SBATCH --cpus-per-gpu=32
 #SBATCH --mem=32GB
 
 # ============================================================================
@@ -17,7 +17,7 @@
 # ============================================================================
 # MODIFY THESE PARAMETERS
 # ============================================================================
-CONFIG_FILE="yaml_files/sudoku_puma.yaml"
+CONFIG_FILE="yaml_files/sudoku_puma_n4.yaml"
 export WANDB_API_KEY="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"
 # Options: sudoku_puma.yaml, sudoku_baseline.yaml
 
@@ -65,8 +65,8 @@ echo "Config File: ${CONFIG_FILE}"
 echo "Training starts at: $(date)"
 echo ""
 
-# Single GPU training (sudoku is a smaller task)
-python train.py --cfg ${CONFIG_FILE}
+# Multi-GPU training (4 GPUs)
+torchrun --nproc_per_node=4 train.py --cfg ${CONFIG_FILE}
 
 TRAIN_EXIT=$?
 

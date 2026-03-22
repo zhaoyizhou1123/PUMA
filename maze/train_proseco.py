@@ -368,7 +368,11 @@ def main(cfg: DictConfig):
 
     # optimizer and scheduler
     optimizer = optim.AdamW(model.parameters(), lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay)
-    num_training_steps = train_cfg.num_epochs * len(train_loader)
+    num_training_steps = getattr(train_cfg, "max_steps", None)
+    if num_training_steps is None:
+        num_training_steps = train_cfg.num_epochs * len(train_loader)
+    assert num_training_steps > 0, "training.max_steps must be positive"
+    max_epochs = max(1, (num_training_steps + len(train_loader) - 1) // len(train_loader))
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=train_cfg.warmup_steps, num_training_steps=num_training_steps)
     if train_cfg.ema is not None:
         assert 0.0 < train_cfg.ema < 1.0, "EMA decay must be between 0 and 1"
@@ -417,7 +421,7 @@ def main(cfg: DictConfig):
     if cfg.wandb.wandb and is_main:
         wandb.init(project=cfg.wandb.project, name=cfg.wandb.name, config=OmegaConf.to_container(cfg, resolve=True))
 
-    for epoch in range(train_cfg.num_epochs):
+    for epoch in range(max_epochs):
         model.train()
 
         if train_sampler is not None:
@@ -436,6 +440,8 @@ def main(cfg: DictConfig):
             pbar = iterable
 
         for itr in pbar:
+            if global_step >= num_training_steps:
+                break
             # update current K if using k schedule
             if strategy == "progressive" and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
                 current_k = k_schedule[next_k_idx][0]
@@ -561,6 +567,12 @@ def main(cfg: DictConfig):
                             print(f"Model saved to: {saved_path}")
                 
                 model.train()
+
+            if global_step >= num_training_steps:
+                break
+
+        if global_step >= num_training_steps:
+            break
     
     if cfg.wandb.wandb and is_main:
         wandb.finish()
