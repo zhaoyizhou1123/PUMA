@@ -383,10 +383,10 @@ def main(cfg: DictConfig):
                 print(f"Step {step}: K={K}")
 
         # intialize the pool
-        B = train_cfg.batch_size
+        B = data_cfg.training.per_gpu_batch_size
         L = model_config.max_position
         def make_pool(K):
-            B = train_cfg.batch_size
+            B = data_cfg.training.per_gpu_batch_size
             L = model_config.max_position
             
             if strategy == "progressive":

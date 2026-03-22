@@ -293,7 +293,8 @@ def main(cfg: DictConfig):
 
     # ckpt dir
     datetime_str = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-    ckpt_dir = f"ckpts/{cfg.wandb.project}/{cfg.wandb.name}_date{datetime_str}"
+    ckpt_root = cfg.training.get("ckpt_root", "ckpts")
+    ckpt_dir = f"{ckpt_root}/{cfg.wandb.project}/{cfg.wandb.name}_date{datetime_str}"
     os.makedirs(ckpt_dir, exist_ok=True)
     if is_main:
         print(f"Checkpoints will be saved to: {ckpt_dir}")
@@ -397,10 +398,10 @@ def main(cfg: DictConfig):
                 print(f"Step {step}: K={K}")
 
         # intialize the pool
-        B = train_cfg.batch_size
+        B = data_cfg.training.per_gpu_batch_size
         L = model_config.max_position
         def make_pool(K):
-            B = train_cfg.batch_size
+            B = data_cfg.training.per_gpu_batch_size
             L = model_config.max_position
             return PhasedMasking(
                 train_loader, B, mask_id, K, device, L,
