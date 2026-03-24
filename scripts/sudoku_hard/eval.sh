@@ -12,11 +12,27 @@ torchrun \
   -m maze.eval --config-path "../yaml_files/sudoku_hard" --config-name base \
      training.strategy=progressive_edit \
      data.seed=123 \
-     +validation.ckpt_path=ckpts/sudoku_hard-pretraining/K2_edit_v3_3_s123_date2026-03-15-15-47/step20000.pt \
+     +validation.ckpt_path=ckpts/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-15-17-46/step145000.pt \
      validation.sampling.unmasking_num=[1] \
      +validation.sampling.edit_freq=[3] \
      +validation.sampling.edit_step=[4] \
      validation.track=False
+
+torchrun \
+  --nnodes=1 \
+  --nproc_per_node=1 \
+  --node_rank=0 \
+  --rdzv_backend=c10d \
+  --rdzv_endpoint=$MASTER_ADDR:$MASTER_PORT \
+  -m maze.eval --config-path "../yaml_files/sudoku_hard" --config-name base \
+     training.strategy=progressive_edit \
+     data.seed=123 \
+     +validation.ckpt_path=ckpts/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-15-17-46/step145000.pt \
+     validation.sampling.unmasking_num=[1] \
+     +validation.sampling.edit_freq=[3] \
+     +validation.sampling.edit_step=[4] \
+     +validation.sampling.edit_strategy=gibbs_edit \
+     validation.track=True
 
 # torchrun \
 #   --nnodes=1 \
