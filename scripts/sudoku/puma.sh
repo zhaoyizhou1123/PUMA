@@ -51,7 +51,7 @@ torchrun \
     training.strategy=progressive \
     training.eval_steps=5000 \
     training.save_steps=5000 \
-    +training.ckpt_root="/projects/bgqz/zzhou24/checkpoints/sudoku" \
+    +training.ckpt_root="/projects/bgqz/zzhou24/checkpoints/" \
     validation.val_dir=/projects/bgqz/zzhou24/data/sudoku \
     validation.sampling.unmasking_num=[1,3,9] \
     validation.track=False \

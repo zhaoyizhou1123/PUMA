@@ -279,7 +279,8 @@ def main(cfg: DictConfig):
 
     # ckpt dir
     datetime_str = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-    ckpt_dir = f"ckpts/{cfg.wandb.project}/{cfg.wandb.name}_date{datetime_str}"
+    ckpt_root = cfg.training.get("ckpt_root", "ckpts")
+    ckpt_dir = f"{ckpt_root}/{cfg.wandb.project}/{cfg.wandb.name}_date{datetime_str}"
     os.makedirs(ckpt_dir, exist_ok=True)
     if is_main:
         print(f"Checkpoints will be saved to: {ckpt_dir}")
@@ -320,7 +321,7 @@ def main(cfg: DictConfig):
 
     # model wrapping
     if world_size > 1 and torch.cuda.is_available():
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, broadcast_buffers=False)
         if is_main:
             print(f"Model wrapping is done!")
 
@@ -366,6 +367,30 @@ def main(cfg: DictConfig):
         ema = ExponentialMovingAverage(ema_params, decay=train_cfg.ema)
         if is_main:
             print("EMA is enabled with decay:", train_cfg.ema)
+
+    # Resume from checkpoint
+    resume_path = cfg.training.get("resume", None)
+    resume_global_step = 0
+    if resume_path and resume_path != "none":
+        if is_main:
+            print(f"Resuming from checkpoint: {resume_path}")
+        ckpt = torch.load(resume_path, map_location="cpu")
+        model_to_load = model.module if isinstance(model, DDP) else model
+        model_to_load.load_state_dict(ckpt["model_state_dict"])
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(device)
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        if train_cfg.ema is not None and "ema_state_dict" in ckpt:
+            ema.load_state_dict(ckpt["ema_state_dict"])
+            ema.move_shadow_params_to_device(device)
+        resume_global_step = ckpt.get("global_step", 0)
+        if is_main:
+            print(f"Resumed at global_step={resume_global_step}")
 
     strategy = train_cfg.strategy
     # k schedule for progressive_edit unmasking. If None use fixed K. If "linear", linearly increase the unmasking steps from 1 to K over the training steps.
@@ -470,9 +495,24 @@ def main(cfg: DictConfig):
         pool = make_pool(current_k)
         next_k_idx = 1
 
+        # fast-forward k_schedule to resume_global_step
+        if resume_global_step > 0:
+            for idx in range(1, len(k_schedule)):
+                if resume_global_step >= k_schedule[idx][1]:
+                    current_k = k_schedule[idx][0]
+                    next_k_idx = idx + 1
+                else:
+                    break
+            pool = make_pool(current_k)
+            if is_main:
+                print(f"[Resume] Restored K={current_k}, next_k_idx={next_k_idx}")
+
 
     # training loop
-    global_step = 0
+    steps_per_epoch = len(train_loader)
+    skip_until_epoch = resume_global_step // steps_per_epoch
+    resume_step_in_epoch = resume_global_step % steps_per_epoch
+    global_step = resume_global_step
 
         
     # wandb initialize
@@ -486,9 +526,13 @@ def main(cfg: DictConfig):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
+        if epoch < skip_until_epoch:
+            continue
+
+        step_offset = resume_step_in_epoch if epoch == skip_until_epoch else 0
+
         if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
             pool.reset_loader_iter()
-            steps_per_epoch = len(train_loader)
             iterable = range(steps_per_epoch)
         elif strategy == "standard" or strategy == "arm":
             iterable = train_loader
@@ -498,7 +542,17 @@ def main(cfg: DictConfig):
         else:
             pbar = iterable
 
-        for itr in pbar:
+        for step_in_epoch, itr in enumerate(pbar):
+            # skip steps already completed before resume
+            if step_in_epoch < step_offset:
+                if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
+                    with torch.no_grad():
+                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+                            xt = pool.current_batch()
+                            logits = model(xt)
+                            log_probs = F.log_softmax(logits, dim=-1)
+                    pool.update_with_logits(log_probs)
+                continue
             # update current K if using k schedule
             if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"] and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
                 current_k = k_schedule[next_k_idx][0]
@@ -613,16 +667,22 @@ def main(cfg: DictConfig):
                         wandb.log({"val/val_loss": val_loss}, step=global_step)
 
                     if is_main and global_step % train_cfg.save_steps == 0 and train_cfg.ema is not None:
-                        saved_path = save_ema_snapshot(ckpt_dir, model, ema, cfg, epoch, global_step, val_loss, val_acc_dict)
+                        saved_path = save_ema_snapshot(
+                            ckpt_dir, model, ema, cfg, epoch, global_step, val_loss, val_acc_dict,
+                            optimizer=optimizer, scheduler=scheduler,
+                        )
                         if saved_path is not None:
                             print(f"EMA Model saved to: {saved_path}")
 
                     if is_main and global_step % train_cfg.save_steps == 0:
-                        # save non-EMA snapshot
+                        # save non-EMA snapshot with full training state for resume
                         saved_path = save_model_snapshot(
                             ckpt_dir, model, cfg, epoch, global_step,
                             val_loss=val_loss,
                             extra=val_acc_dict,
+                            optimizer=optimizer,
+                            scheduler=scheduler,
+                            ema=ema if train_cfg.ema is not None else None,
                         )
                         if saved_path is not None:
                             print(f"Model saved to: {saved_path}")
