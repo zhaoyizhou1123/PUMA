@@ -16,13 +16,14 @@
 export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 
-module load cuda/12.6.1
+module load default
+module load cuda/12.9.0
 source ~/miniconda3/bin/activate
 conda activate puma
 
 # Define your parameters
 SEEDS=(123 2026 2027 2028)
-START_PORT=29500
+START_PORT=29530
 
 SEED=${SEEDS[$SLURM_ARRAY_TASK_ID]}
 
@@ -41,19 +42,37 @@ MASTER_ADDR=localhost
 
 echo "Running SEED: $SEED | PORT: $PORT"
 
+# torchrun \
+#   --nnodes=1 \
+#   --nproc_per_node=1 \
+#   --node_rank=0 \
+#   --rdzv_backend=c10d \
+#   --rdzv_endpoint=$MASTER_ADDR:$PORT \
+#   -m maze.train --config-path "../yaml_files/sudoku_hard" --config-name base \
+#     training.strategy=progressive_edit \
+#     training.eval_steps=5000 \
+#     training.save_steps=5000 \
+#     +training.ckpt_root="/projects/bgqz/zzhou24/checkpoints/sudoku_hard" \
+#     validation.val_dir=/projects/bgqz/zzhou24/data/sudoku_hard \
+#     validation.sampling.unmasking_num=[1] \
+#     +validation.sampling.edit_freq=[3] \
+#     +validation.sampling.edit_step=[4] \
+#     validation.track=False \
+#     data.seed=$SEED
+
 torchrun \
   --nnodes=1 \
   --nproc_per_node=1 \
   --node_rank=0 \
   --rdzv_backend=c10d \
   --rdzv_endpoint=$MASTER_ADDR:$PORT \
-  -m maze.train --config-path "../yaml_files/sudoku" --config-name base \
+  -m maze.train --config-path "../yaml_files/sudoku_hard" --config-name base \
     training.strategy=progressive_edit \
     training.eval_steps=5000 \
     training.save_steps=5000 \
-    +training.ckpt_root="/projects/bgqz/zzhou24/checkpoints/" \
-    validation.val_dir=/projects/bgqz/zzhou24/data/sudoku \
-    validation.sampling.unmasking_num=[1,3,9] \
+    +training.ckpt_root="/projects/bgqz/zzhou24/checkpoints" \
+    validation.val_dir=/projects/bgqz/zzhou24/data/sudoku_hard \
+    validation.sampling.unmasking_num=[1] \
     +validation.sampling.edit_freq=[3] \
     +validation.sampling.edit_step=[4] \
     validation.track=False \

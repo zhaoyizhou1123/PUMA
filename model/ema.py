@@ -15,6 +15,9 @@ def save_model_snapshot(
     global_step: int,
     val_loss: float = None,
     extra: dict = None,
+    optimizer=None,
+    scheduler=None,
+    ema=None,
 ):
     model_to_save = model.module if isinstance(model, DDP) else model
 
@@ -26,6 +29,12 @@ def save_model_snapshot(
         "config": OmegaConf.to_container(cfg, resolve=True),
         "is_ema_snapshot": False,
     }
+    if optimizer is not None:
+        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+    if ema is not None:
+        checkpoint["ema_state_dict"] = ema.state_dict()
     if extra is not None:
         checkpoint.update(extra)
 
@@ -44,6 +53,8 @@ def save_ema_snapshot(
     global_step: int,
     val_loss: float = None,
     extra: dict = None,
+    optimizer=None,
+    scheduler=None,
 ):
     model_to_save = model.module if isinstance(model, DDP) else model
 
@@ -61,6 +72,10 @@ def save_ema_snapshot(
         "ema_state_dict": ema.state_dict(),
         "is_ema_snapshot": True,
     }
+    if optimizer is not None:
+        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
     if extra is not None:
         checkpoint.update(extra)
 
