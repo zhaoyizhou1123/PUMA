@@ -29,7 +29,7 @@ def save_model_snapshot(
     if extra is not None:
         checkpoint.update(extra)
 
-    path = os.path.join(ckpt_dir, f"step={global_step}.pt")
+    path = os.path.join(ckpt_dir, f"step{global_step}.pt")
     tmp_path = path + ".tmp"
     torch.save(checkpoint, tmp_path)
     os.replace(tmp_path, path)

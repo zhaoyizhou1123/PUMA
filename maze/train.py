@@ -20,9 +20,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import get_cosine_schedule_with_warmup
 from omegaconf import OmegaConf, DictConfig, ListConfig, open_dict
 from model.ema import ExponentialMovingAverage, save_ema_snapshot, save_model_snapshot
-from progressive import PhasedMaskingEdit, mdm_edit_loss_fn, mdm_loss_fn
+from progressive import PhasedMaskingEdit, PhasedMaskingEditV2, PhasedMasking, mdm_edit_loss_fn, mdm_loss_fn, PhasedMaskingEditV3, mdm_edit_loss_fn_v5
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from eval.gsm8k_eval import evaluate_ddp_gsm8k
+from data.sudoku_utils import resolve_sudoku_grid_size
 
 # def parse_args():
 #     parser = argparse.ArgumentParser()
@@ -41,29 +42,84 @@ def setup_ddp():
         rank, world_size, local_rank = 0, 1, 0
     return rank, world_size, local_rank
 
+def compute_scaled_learning_rate(base_lr: float, batch_size: int, scaling_mode: str, base_batch_size: int = 128) -> float:
+    """
+    Compute scaled learning rate based on batch size.
+
+    Args:
+        base_lr: Base learning rate (for batch_size=base_batch_size)
+        batch_size: Current batch size
+        scaling_mode: One of 'linear', 'sqrt', or 'constant'
+        base_batch_size: Reference batch size (default: 128)
+
+    Returns:
+        Scaled learning rate
+    """
+    if scaling_mode == "constant":
+        return base_lr
+    elif scaling_mode == "sqrt":
+        scale_factor = math.sqrt(batch_size / base_batch_size)
+    elif scaling_mode == "linear":
+        scale_factor = batch_size / base_batch_size
+    else:
+        raise ValueError(f"Invalid lr_scaling_mode: {scaling_mode}. Must be 'linear', 'sqrt', or 'constant'")
+
+    scaled_lr = base_lr * scale_factor
+    return scaled_lr
+
+
 def evaluate_ddp_dict(model, cfg, device, rank, world_size, step=0, logdir=None):
     sampling = cfg.validation.sampling
     if cfg.training.strategy == "arm":
         return {"arm": evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)}
     base_sampling = sampling
     out = {}
+
+    # Determine if strategy uses editing during training
+    strategy_uses_edit = cfg.training.strategy in ["proseco", "edit", "progressive_edit"]
+
+    # Always get the full list of edit_freq and edit_step from config for metric naming
     edit_freq_list = list(base_sampling.edit_freq) if hasattr(base_sampling, "edit_freq") else [None]
     edit_step_list = list(base_sampling.edit_step) if hasattr(base_sampling, "edit_step") else [None]
+
     for confidence in list(base_sampling.confidence):
         for unmasking_num in list(base_sampling.unmasking_num):
-            for edit_freq in edit_freq_list:
-                for edit_step in edit_step_list:
-                    sampling = deepcopy(base_sampling)
-                    sampling.confidence = confidence
-                    sampling.unmasking_num = unmasking_num
-                    metric_name = f"{confidence}_unmasking_{unmasking_num}"
-                    if edit_freq is not None:
-                        sampling.edit_freq = edit_freq
-                        metric_name += f"_editfreq_{edit_freq}"
-                    if edit_step is not None:
-                        sampling.edit_step = edit_step
-                        metric_name += f"_editstep_{edit_step}"
-                    out[metric_name] = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)
+            # For strategies without editing, evaluate once and reuse the result
+            if not strategy_uses_edit:
+                # Evaluate with no editing (edit_freq=-1)
+                sampling_no_edit = deepcopy(base_sampling)
+                sampling_no_edit.confidence = confidence
+                sampling_no_edit.unmasking_num = unmasking_num
+                sampling_no_edit.edit_freq = -1
+                if hasattr(base_sampling, "edit_step") and len(list(base_sampling.edit_step)) > 0:
+                    sampling_no_edit.edit_step = list(base_sampling.edit_step)[0]
+                metric_name_no_edit = f"{confidence}_unmasking_{unmasking_num}_editfreq_-1_editstep_{sampling_no_edit.edit_step if hasattr(sampling_no_edit, 'edit_step') else 'none'}"
+                result_no_edit = evaluate_ddp(model, cfg, device, rank, world_size, sampling_no_edit, step=step, logdir=logdir)
+
+                # Fill all edit_freq variants with the same result for wandb consistency
+                for edit_freq in edit_freq_list:
+                    for edit_step in edit_step_list:
+                        metric_name = f"{confidence}_unmasking_{unmasking_num}"
+                        if edit_freq is not None:
+                            metric_name += f"_editfreq_{edit_freq}"
+                        if edit_step is not None:
+                            metric_name += f"_editstep_{edit_step}"
+                        out[metric_name] = result_no_edit
+            else:
+                # For edit-based strategies, evaluate each edit_freq separately
+                for edit_freq in edit_freq_list:
+                    for edit_step in edit_step_list:
+                        sampling = deepcopy(base_sampling)
+                        sampling.confidence = confidence
+                        sampling.unmasking_num = unmasking_num
+                        metric_name = f"{confidence}_unmasking_{unmasking_num}"
+                        if edit_freq is not None:
+                            sampling.edit_freq = edit_freq
+                            metric_name += f"_editfreq_{edit_freq}"
+                        if edit_step is not None:
+                            sampling.edit_step = edit_step
+                            metric_name += f"_editstep_{edit_step}"
+                        out[metric_name] = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)
     return out
 
 def grad_norm(parameters):
@@ -184,8 +240,8 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
         val_loader.dataset,
         batch_size=val_loader.batch_size or 16,
         sampler=sampler,
-        num_workers=getattr(val_loader, "num_workers", 4),
-        pin_memory=getattr(val_loader, "pin_memory", False),
+        num_workers=0,  # must be 0: CUDA already initialized in main process, forked workers can't re-init
+        pin_memory=False,
         drop_last=False,
         )
     else:
@@ -203,7 +259,7 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
                 if strategy == "arm":
                     loss = arm_loss(model, x0, eos_id=eos_id, prompt_mask=pm)
-                elif strategy in ["progressive_edit"]:
+                elif strategy in ["progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
                     loss = mdm_loss_edit(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
                 elif strategy in ["standard", "progressive"]:
                     loss = mdm_loss(model, x0, mask_id, prompt_mask = pm, arm_init=arm_init)
@@ -264,6 +320,9 @@ def main(cfg: DictConfig):
         print("Hey, we start training!")
         print(f"Training with {world_size} GPUs")
 
+    # Resolve grid_size -> vocab_size, max_position, mask_id for sudoku configs
+    cfg = resolve_sudoku_grid_size(cfg)
+
     # Manually compute per-GPU batch size and set it in the config
     bs = cfg.training.batch_size
     assert bs % world_size == 0, f"Batch size {bs} must be divisible by world size {world_size}"
@@ -279,7 +338,7 @@ def main(cfg: DictConfig):
 
     # ckpt dir
     datetime_str = datetime.datetime.now().strftime('%Y-%m-%d-%H-%M')
-    ckpt_dir = f"ckpts/date={datetime_str}"
+    ckpt_dir = f"ckpts/{cfg.wandb.project}/{cfg.wandb.name}_date{datetime_str}"
     os.makedirs(ckpt_dir, exist_ok=True)
     if is_main:
         print(f"Checkpoints will be saved to: {ckpt_dir}")
@@ -348,7 +407,7 @@ def main(cfg: DictConfig):
             # batch_size=train_cfg.batch_size,
             batch_size=data_cfg.training.per_gpu_batch_size, # dataloader batch_size is micro batch size
             sampler=train_sampler,
-            num_workers=4,
+            num_workers=0,  # must be 0 in DDP: CUDA already initialized, forked workers can't re-init
             pin_memory=False,
             drop_last=False
         )
@@ -356,12 +415,38 @@ def main(cfg: DictConfig):
         train_sampler = None
 
     # optimizer and scheduler
-    optimizer = optim.AdamW(model.parameters(), lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay)
+    # Compute scaled learning rate based on batch size
+    lr_scaling_mode = getattr(train_cfg, "lr_scaling_mode", "constant")
+    base_lr = train_cfg.learning_rate
+    scaled_lr = compute_scaled_learning_rate(
+        base_lr=base_lr,
+        batch_size=train_cfg.batch_size,
+        scaling_mode=lr_scaling_mode
+    )
+
+    if is_main:
+        print(f"LR scaling mode: {lr_scaling_mode}")
+        print(f"Base LR (batch_size=128): {base_lr}")
+        print(f"Current batch size: {train_cfg.batch_size}")
+        print(f"Scaled LR: {scaled_lr}")
+
+    optimizer = optim.AdamW(model.parameters(), lr=scaled_lr, weight_decay=train_cfg.weight_decay)
+
+    # Compute total training steps: use max_steps if provided, otherwise fall back to num_epochs
     num_training_steps = getattr(train_cfg, "max_steps", None)
     if num_training_steps is None:
         num_training_steps = train_cfg.num_epochs * len(train_loader)
     assert num_training_steps > 0, "training.max_steps must be positive"
+
+    # Compute max_epochs needed to reach num_training_steps
     max_epochs = max(1, (num_training_steps + len(train_loader) - 1) // len(train_loader))
+
+    if is_main:
+        if getattr(train_cfg, "max_steps", None) is not None:
+            print(f"Training for max_steps={num_training_steps} (~{max_epochs} epochs needed, num_epochs={train_cfg.num_epochs} ignored)")
+        else:
+            print(f"Training for {train_cfg.num_epochs} epochs ({num_training_steps} total steps)")
+
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=train_cfg.warmup_steps, num_training_steps=num_training_steps)
     if train_cfg.ema is not None:
         assert 0.0 < train_cfg.ema < 1.0, "EMA decay must be between 0 and 1"
@@ -374,7 +459,7 @@ def main(cfg: DictConfig):
     strategy = train_cfg.strategy
     # k schedule for progressive_edit unmasking. If None use fixed K. If "linear", linearly increase the unmasking steps from 1 to K over the training steps.
     # If a list of integers, use the list as the k_steps. If an integer, use constant interval increase.
-    if strategy in ["progressive", "progressive_edit"]: # puma, ours
+    if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]: # puma, ours
         k_schedule = parse_k_schedule_increasing(getattr(train_cfg, "k_schedule", None))
         if len(k_schedule) == 0:
             k_schedule = [(train_cfg.K, 0)]
@@ -387,17 +472,90 @@ def main(cfg: DictConfig):
                 print(f"Step {step}: K={K}")
 
         # intialize the pool
-        B = train_cfg.batch_size
+        B = data_cfg.training.per_gpu_batch_size
         L = model_config.max_position
         def make_pool(K):
-            B = train_cfg.batch_size
+            B = data_cfg.training.per_gpu_batch_size
             L = model_config.max_position
-            return PhasedMaskingEdit(
-                train_loader, B, mask_id, K, device, L,
-                mode=train_cfg.mode,
-                confidence_threshold=train_cfg.confidence_threshold,
-                eos_id=train_cfg.eos_id,
-            )
+            
+            if strategy == "progressive":
+                return PhasedMasking(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "progressive_edit":
+                return PhasedMaskingEdit(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v2":
+                return PhasedMaskingEditV2(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v3":
+                return PhasedMaskingEditV3(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v3_2":
+                from progressive import PhasedMaskingEditV3_2
+                return PhasedMaskingEditV3_2(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v3_3":
+                from progressive import PhasedMaskingEditV3_3
+                return PhasedMaskingEditV3_3(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v4":
+                from progressive import PhasedMaskingEditV4
+                return PhasedMaskingEditV4(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v5":
+                # still use v4 
+                from progressive import PhasedMaskingEditV4
+                return PhasedMaskingEditV4(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v6":
+                from progressive import PhasedMaskingEditV6
+                return PhasedMaskingEditV6(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            if strategy == "edit_v7":
+                from progressive import PhasedMaskingEditV7
+                return PhasedMaskingEditV7(
+                    train_loader, B, mask_id, K, device, L,
+                    mode=train_cfg.mode,
+                    confidence_threshold=train_cfg.confidence_threshold,
+                    eos_id=train_cfg.eos_id,
+                )
+            raise ValueError(f"Unknown strategy: {strategy}")
         pool = make_pool(current_k)
         next_k_idx = 1
 
@@ -417,7 +575,7 @@ def main(cfg: DictConfig):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
-        if strategy in ["progressive", "progressive_edit"]:
+        if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
             pool.reset_loader_iter()
             steps_per_epoch = len(train_loader)
             iterable = range(steps_per_epoch)
@@ -430,10 +588,12 @@ def main(cfg: DictConfig):
             pbar = iterable
 
         for itr in pbar:
+            # Check if we've reached max_steps
             if global_step >= num_training_steps:
                 break
+
             # update current K if using k schedule
-            if strategy in ["progressive", "progressive_edit"] and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
+            if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"] and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
                 current_k = k_schedule[next_k_idx][0]
                 if is_main:
                     print(f"[K-SWITCH] Step {global_step}: K={current_k}")
@@ -444,13 +604,19 @@ def main(cfg: DictConfig):
 
             # to enable flashattention, we do the autocast
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
-                if strategy == "progressive_edit":
+                if strategy in ["progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v7"]:
                     xt = pool.current_batch()
                     # print("xt:", xt)
                     logits = model(xt)
                     log_probs = F.log_softmax(logits, dim=-1)
                     loss = mdm_edit_loss_fn(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)
                     # print(loss.shape)
+                elif strategy in ["edit_v5", "edit_v6"]:
+                    xt = pool.current_batch()
+                    # print("xt:", xt)
+                    logits = model(xt)
+                    log_probs = F.log_softmax(logits, dim=-1)
+                    loss = mdm_edit_loss_fn_v5(log_probs, pool.x0, pool.xt, mask_id, prompt_mask = pool.state['prompt_mask'], arm_init=model_config.predict_next_token)                   
                 elif strategy == "progressive":
                     xt = pool.current_batch()
                     logits = model(xt)
@@ -481,7 +647,7 @@ def main(cfg: DictConfig):
             global_step += 1
             
             # update a new seq
-            if strategy in ["progressive", "progressive_edit"]:
+            if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
                 pool.update_with_logits(log_probs)
 
             if is_main:
@@ -495,8 +661,10 @@ def main(cfg: DictConfig):
                         gn = grad_norm(model.parameters())
                         wandb.log({"train/grad_norm": gn}, step=global_step)
 
-                        if strategy in ["progressive", "progressive_edit"]:
+                        if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
                             wandb.log({"train/current_k": current_k}, step=global_step)
+
+                        wandb.log({"train/lr": optimizer.param_groups[0]["lr"]}, step=global_step)
 
             if global_step % train_cfg.eval_steps == 0:
                 model.eval()
@@ -554,12 +722,14 @@ def main(cfg: DictConfig):
                 
                 model.train()
 
+            # Check if we've reached max_steps after eval
             if global_step >= num_training_steps:
                 break
 
+        # Check if we've reached max_steps after completing an epoch
         if global_step >= num_training_steps:
             break
-    
+
     if cfg.wandb.wandb and is_main:
         wandb.finish()
     

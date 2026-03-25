@@ -16,12 +16,13 @@ training:
   K: 8
   data_ratio: 1.0
   learning_rate: 3e-4
+  lr_scaling_mode: "linear"  # scale LR with batch size; options: "constant", "sqrt", "linear"
   weight_decay: 0.01
   max_steps: 2000000
   num_epochs: 6 # num_epochs is fall back for max_steps; training will stop when either condition is met
   max_grad_norm: 1.0
-  batch_size: 128
-  warmup_steps: 1000
+  batch_size: 128  # 8x increase from baseline 128
+  warmup_steps: 4000  # 4x increase for linear LR scaling with 8x batch size (prevents instability in early training with larger LR)
   logging_steps: 100
   eval_steps: 5000
   save_steps: 10000
@@ -30,6 +31,7 @@ training:
   eos_id: null
 
 validation:
+  batch_size: 1024
   val_dir: "data/sudoku_n4"
   ratio: 0.01
   sampling: 
@@ -54,5 +56,5 @@ data:
 wandb:
   wandb: true
   project: "puma-mdm-pretraining"
-  name: "sudoku-puma-bs128-s${data.seed}"
+  name: "sudoku-puma-bs1024-s${data.seed}"
   entity: "zw2700"

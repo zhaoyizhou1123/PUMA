@@ -8,7 +8,7 @@
 #SBATCH --gpus-per-node=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=32
-#SBATCH --mem=32GB
+#SBATCH --mem=128GB
 
 # ============================================================================
 # PUMA Training Script - Sudoku Edit (progressive_edit)
@@ -17,7 +17,6 @@
 # ============================================================================
 # MODIFY THESE PARAMETERS
 # ============================================================================
-CONFIG_FILE="yaml_files/sudoku_puma_edit_n4.yaml"
 export WANDB_API_KEY="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"
 
 # ============================================================================
@@ -60,12 +59,13 @@ echo ""
 echo "=========================================="
 echo "Starting PUMA Training - Sudoku Edit (n4)"
 echo "=========================================="
-echo "Config File: ${CONFIG_FILE}"
 echo "Training starts at: $(date)"
 echo ""
 
 # Multi-GPU training (n4 requires more compute)
-torchrun --nproc_per_node=4 train_edit.py --cfg ${CONFIG_FILE}
+torchrun --nproc_per_node=4 -m maze.train \
+    --config-path ../yaml_files \
+    --config-name sudoku_puma_edit_n4
 
 TRAIN_EXIT=$?
 

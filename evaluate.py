@@ -48,20 +48,51 @@ def evaluate_ddp_dict(model, cfg, device, rank, world_size, step=0, logdir=None)
     base_sampling = sampling
     out = {}
 
+    # Determine if strategy uses editing during training
+    strategy_uses_edit = cfg.training.strategy in ["proseco", "edit", "progressive_edit"]
+
+    # Always get the full list of edit_freq and edit_step from config for metric naming
+    edit_freq_list = list(base_sampling.edit_freq) if hasattr(base_sampling, "edit_freq") else [None]
+    edit_step_list = list(base_sampling.edit_step) if hasattr(base_sampling, "edit_step") else [None]
+
     for confidence in list(base_sampling.confidence):
         for unmasking_num in list(base_sampling.unmasking_num):
-            for edit_freq in list(base_sampling.edit_freq):
-                for edit_step in list(base_sampling.edit_step):
-                    sampling = deepcopy(base_sampling)
-                    sampling.confidence = confidence
-                    sampling.unmasking_num = unmasking_num
-                    sampling.edit_freq = edit_freq
-                    sampling.edit_step = edit_step
-                    metric_name = f"{confidence}_unmasking_{unmasking_num}_efreq{edit_freq}_estep{edit_step}"
-                    metric_dir = os.path.join(logdir, metric_name) if logdir is not None else None
-                    if metric_dir is not None:
-                        os.makedirs(metric_dir, exist_ok=True)
-                    out[metric_name] = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=metric_dir)
+            # For strategies without editing, evaluate once and reuse the result
+            if not strategy_uses_edit:
+                # Evaluate with no editing (edit_freq=-1)
+                sampling_no_edit = deepcopy(base_sampling)
+                sampling_no_edit.confidence = confidence
+                sampling_no_edit.unmasking_num = unmasking_num
+                sampling_no_edit.edit_freq = -1
+                if hasattr(base_sampling, "edit_step") and len(list(base_sampling.edit_step)) > 0:
+                    sampling_no_edit.edit_step = list(base_sampling.edit_step)[0]
+
+                # Only create one metric_dir for the actual evaluation
+                metric_name_no_edit = f"{confidence}_unmasking_{unmasking_num}_editfreq_-1_editstep_{sampling_no_edit.edit_step if hasattr(sampling_no_edit, 'edit_step') else 'none'}"
+                metric_dir = os.path.join(logdir, metric_name_no_edit) if logdir is not None else None
+                if metric_dir is not None:
+                    os.makedirs(metric_dir, exist_ok=True)
+                result_no_edit = evaluate_ddp(model, cfg, device, rank, world_size, sampling_no_edit, step=step, logdir=metric_dir)
+
+                # Fill all edit_freq variants with the same result for wandb consistency
+                for edit_freq in edit_freq_list:
+                    for edit_step in edit_step_list:
+                        metric_name = f"{confidence}_unmasking_{unmasking_num}_efreq{edit_freq}_estep{edit_step}"
+                        out[metric_name] = result_no_edit
+            else:
+                # For edit-based strategies, evaluate each edit_freq separately
+                for edit_freq in edit_freq_list:
+                    for edit_step in edit_step_list:
+                        sampling = deepcopy(base_sampling)
+                        sampling.confidence = confidence
+                        sampling.unmasking_num = unmasking_num
+                        sampling.edit_freq = edit_freq
+                        sampling.edit_step = edit_step
+                        metric_name = f"{confidence}_unmasking_{unmasking_num}_efreq{edit_freq}_estep{edit_step}"
+                        metric_dir = os.path.join(logdir, metric_name) if logdir is not None else None
+                        if metric_dir is not None:
+                            os.makedirs(metric_dir, exist_ok=True)
+                        out[metric_name] = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=metric_dir)
     return out
 
 def grad_norm(parameters):
