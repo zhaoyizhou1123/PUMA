@@ -88,7 +88,7 @@ def split_sudoku(data_dir: str, sudoku_type: str, val_ratio: float = 0.05, seed:
 
 
 if __name__ == "__main__":
-    data_dir = "data/sudoku_new"
+    data_dir = "/projects/bgqz/zzhou24/data/sudoku"
     train_data, val_data = split_sudoku(data_dir, "new")
     print(len(train_data), len(val_data))
     print(val_data[0])

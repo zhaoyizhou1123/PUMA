@@ -1,5 +1,4 @@
-# Adapted from MaxRL codebase by Guanning Zeng
-# We change the representation of the maze: We represent the maze as a list of empty cells coordinates
+# maxrl format
 
 from argparse import Action
 import numpy as np
@@ -7,7 +6,6 @@ import random
 from collections import deque
 import json
 import os
-from tqdm import tqdm
 
 class Maze_Env:
     def __init__(self, start):
@@ -44,8 +42,6 @@ class MazeGenerator:
         # 任务：修改action_names为不带尖括号的格式，用于文本训练数据生成
         # 实现方案：使用UP、DOWN、LEFT、RIGHT作为action token名称
         self.action_names = ['UP', 'DOWN', 'LEFT', 'RIGHT']
-
-        # 0-(size-1) are used as coordinates
 
     def generate(self, algorithm=None):
         """
@@ -209,35 +205,6 @@ class MazeGenerator:
         
         return None # No solution (should not happen in principle)
 
-    def solve_bfs_coord(self):
-        """
-        Solve the maze using BFS (Breadth-First Search) to find the shortest path.
-        This is your SFT Ground Truth (y*).
-        Return coordinate instead of actions
-        """
-        queue = deque([(self.start, list(self.start))]) # (current_pos, path_of_actions)
-        visited = set([self.start])
-
-        while queue:
-            (cx, cy), path = queue.popleft()
-
-            # Found goal
-            if (cx, cy) == self.goal:
-                return path # Returns coordinates, e.g. [1, 3, 3, 0...]
-
-            # Try all 4 directions
-            for action_idx, (dx, dy) in self.actions.items():
-                nx, ny = cx + dx, cy + dy
-
-                # Check bounds and collisions
-                if 0 <= nx < self.size and 0 <= ny < self.size:
-                    if self.grid[nx, ny] == 0 and (nx, ny) not in visited:
-                        visited.add((nx, ny))
-                        new_path = path + [nx, ny]
-                        queue.append(((nx, ny), new_path))
-        
-        return None # No solution (should not happen in principle)
-
     def to_prompt_string(self):
         """
         Converts the maze state to a prompt string for LLM input.
@@ -315,45 +282,6 @@ class MazeGenerator:
             "optimal_path_length": len(optimal_actions)
         }
 
-    def to_tokenized_sequence(self, max_path_len=None):
-        """
-        Output can be viewed as tokenized, so no tokenizer needed.
-        Grid representation: (row, column, status)
-        Solution representation: path cell coordinates (row, column) in order
-        """
-        # 获取最优路径
-        optimal_actions = self.solve_bfs_coord()
-        if optimal_actions is None:
-            return None
-        
-        optimal_path_len = len(optimal_actions) // 2
-        if max_path_len is not None:
-            if optimal_path_len > max_path_len:
-                # print(f"Warning: Maze skipped due to optimal path length {optimal_path_len} exceeding max_path_len {max_path_len}")
-                return None
-            if optimal_path_len < max_path_len:
-                # Pad the path with the last coordinate (goal) to reach max_path_len
-                padding_needed = max_path_len - optimal_path_len
-                # print(f"Info: Padding optimal path with {padding_needed} steps to reach max_path_len {max_path_len}")
-                optimal_actions.extend([self.goal[0], self.goal[1]] * padding_needed)
-        
-        # 构建网格token序列
-        grid_tokens = []
-        for r in range(self.size):
-            for c in range(self.size):
-                if self.grid[r,c] == 0:
-                    grid_tokens.extend([r,c])
-        
-        sequence = grid_tokens + optimal_actions
-        
-        # 用空格连接
-        
-        return {
-            "sequence": sequence,
-            "optimal_path_length": optimal_path_len,
-            "empty_cells": len(grid_tokens) // 2,
-            "prompt_length": len(grid_tokens)
-        }
 
 class DatasetGenerator:
     def __init__(self, size=7, seed=42, algorithm='prim', num_episodes=100, filename='dataset.json', save_dir='./data'):
@@ -373,6 +301,25 @@ class DatasetGenerator:
         for i in range(self.num_episodes):
             self.episodes.append(self.maze_generator.format_data())
         return self.episodes, self.metadata
+    
+    # def training_format(self):
+    #     data = []
+    #     for episode in self.episodes:
+    #         policy = episode["policy"]
+    #         for state, action in policy.items():
+    #             input_prompt = (
+    #                 f"Walls: {episode['env']['Wallsf']}\n"
+    #                 f"Start: {episode['env']['Start']}\n"
+    #                 f"Goal: {episode['env']['Goal']}\n"
+    #                 f"State: {state}\n"
+    #                 f"Action: "
+    #             )
+    #             output = action
+    #             data.append({
+    #                 "input": input_prompt,
+    #                 "output": output,
+    #             })
+    #     return data
     
     def save(self, filename=None):
         if filename is None:
@@ -412,58 +359,6 @@ class DatasetGenerator:
         os.makedirs(self.save_dir, exist_ok=True)
         
         # 保存train数据
-        train_filename = os.path.join(self.save_dir, 'train.json')
-        with open(train_filename, 'w', encoding='utf-8') as f:
-            json.dump(train_data, f, indent=2, ensure_ascii=False)
-        
-        # 保存val数据
-        val_filename = os.path.join(self.save_dir, 'val.json')
-        with open(val_filename, 'w', encoding='utf-8') as f:
-            json.dump(val_data, f, indent=2, ensure_ascii=False)
-        
-        # 保存元数据
-        metadata = {
-            "size": self.maze_generator.size,
-            "seed": self.metadata.get('seed'),
-            "algorithm": self.maze_generator.algorithm,
-            "num_train": len(train_data),
-            "num_val": len(val_data),
-            "val_ratio": val_ratio
-        }
-        metadata_filename = os.path.join(self.save_dir, 'training_metadata.json')
-        with open(metadata_filename, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, indent=2, ensure_ascii=False)
-        
-        print(f"训练数据已生成:")
-        print(f"  Train: {len(train_data)} 条，保存至 {train_filename}")
-        print(f"  Val: {len(val_data)} 条，保存至 {val_filename}")
-        print(f"  元数据保存至 {metadata_filename}")
-        
-        return train_data, val_data, metadata
-
-    def generate_tokenized_training_data(self, val_ratio=0.1, max_path_len=None):
-        # 生成所有episode的文本数据
-        text_data = []
-        for i in tqdm(range(self.num_episodes)):
-            # 每次生成新的迷宫（使用内部rng，会自动生成不同的迷宫）
-            self.maze_generator.generate()
-            text_item = self.maze_generator.to_tokenized_sequence(max_path_len)
-            if text_item is not None:
-                text_data.append(text_item)
-        
-        # 划分train/val
-        # 使用固定的seed确保可复现的划分
-        split_rng = random.Random(self.metadata.get('seed', 42))
-        split_rng.shuffle(text_data)
-        
-        val_size = int(len(text_data) * val_ratio)
-        val_data = text_data[:val_size]
-        train_data = text_data[val_size:]
-        
-        # 确保保存目录存在
-        os.makedirs(self.save_dir, exist_ok=True)
-        
-        # 保存train数据
         train_filename = os.path.join(self.save_dir, 'train.jsonl')
         with open(train_filename, 'w', encoding='utf-8') as f:
             for d in train_data:
@@ -476,7 +371,6 @@ class DatasetGenerator:
             for d in val_data:
                 json.dump(d, f, ensure_ascii=False)
                 f.write('\n')
-
         
         # 保存元数据
         metadata = {
@@ -497,20 +391,19 @@ class DatasetGenerator:
         print(f"  元数据保存至 {metadata_filename}")
         
         return train_data, val_data, metadata
-                 
+            
 # ================= Usage Example =================
 if __name__ == "__main__":
     # # 示例1: 单个迷宫的文本序列生成
     # print("=" * 50)
     # print("示例1: 单个迷宫的文本序列生成")
     # print("=" * 50)
-    # maze = MazeGenerator(size=17, seed=20)
-    # grid = maze.generate(algorithm='dfs')
-    # print("Grid:", grid)
+    # maze = MazeGenerator(size=7, seed=42)
+    # grid = maze.generate()
     # maze.render_ascii()
     
     # # 生成文本序列
-    # text_data = maze.to_tokenized_sequence()
+    # text_data = maze.to_text_sequence()
     # if text_data:
     #     print(f"\n文本序列:")
     #     print(text_data["sequence"])
@@ -525,10 +418,9 @@ if __name__ == "__main__":
         seed=42,
         algorithm='dfs',
         num_episodes=1000000,
-        save_dir='./data/maze17x17_dfs'
+        save_dir='data/maze17x17_dfs_v2'
     )
-    # TODO! We should consider padding the prompt
-    train_data, val_data, metadata = dataset_gen.generate_tokenized_training_data(val_ratio=0.001, max_path_len = 100)
+    train_data, val_data, metadata = dataset_gen.generate_text_training_data(val_ratio=0.001)
     
     # 显示第一条训练数据的示例
     if train_data:

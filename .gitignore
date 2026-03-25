@@ -8,4 +8,6 @@ debug*
 ckpts/
 wandb/
 outputs
-logs/
+venv/*
+logs/*
+slurm/

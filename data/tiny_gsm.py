@@ -6,6 +6,7 @@ from tqdm.auto import tqdm
 from datasets import load_dataset, load_dataset_builder
 from transformers import AutoTokenizer
 from torch.utils.data import Dataset, random_split
+from typing import Optional
 
 
 def _get_train_size_fallback():
@@ -180,18 +181,24 @@ class TinyGSMDataset(Dataset):
         self.N = int(self.meta["num_examples"])
         self.bitorder = self.meta.get("prompt_mask_bitorder", "little")
 
-        labels_path = os.path.join(data_dir, "labels.bin")
-        mask_path   = os.path.join(data_dir, "prompt_mask.bin")
+        self.labels_path = os.path.join(data_dir, "labels.bin")
+        self.mask_path   = os.path.join(data_dir, "prompt_mask.bin")
 
-        self.labels_mm = np.memmap(labels_path, mode="r", dtype=np.uint32, shape=(self.N, self.max_len))
-        self.mask_mm   = np.memmap(mask_path,   mode="r", dtype=np.uint8,  shape=(self.N, self.max_len // 8))
+        self._labels_mm = None
+        self._mask_mm   = None
+
+    def _open_memmaps(self):
+        if self._labels_mm is None:
+            self._labels_mm = np.memmap(self.labels_path, mode="r", dtype=np.uint32, shape=(self.N, self.max_len))
+            self._mask_mm   = np.memmap(self.mask_path,   mode="r", dtype=np.uint8,  shape=(self.N, self.max_len // 8))
 
     def __len__(self):
         return self.N
 
     def __getitem__(self, idx: int):
-        labels = torch.from_numpy(self.labels_mm[idx].astype(np.int64))  # to torch long
-        packed = self.mask_mm[idx]
+        self._open_memmaps()
+        labels = torch.from_numpy(self._labels_mm[idx].astype(np.int64))  # to torch long
+        packed = self._mask_mm[idx]
         mask = np.unpackbits(packed, bitorder=self.bitorder)[: self.max_len].astype(np.bool_)
         prompt_mask = torch.from_numpy(mask)
 
@@ -211,5 +218,5 @@ def split_tinygsm(data_dir: str, val_ratio: float = 0.05, seed: int = 2025):
 
 
 if __name__ == "__main__":
-    out_dir = "data/tiny_gsm"
+    out_dir = "/projects/bgqz/zzhou24/data/tinygsm"
     pretokenize_tinygsm(out_dir=out_dir)

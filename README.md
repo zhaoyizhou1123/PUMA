@@ -1,8 +1,21 @@
 <div align="center">
 
-# PUMA: Progressive Unmasking for Accelerated Masked Diffusion Training
+<img src="figure/puma_title.svg" alt="PUMA: Progressive Unmasking for Accelerated Masked Diffusion Training" width="980" />
 
 </div>
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2602.10314">
+    <img
+      src="https://img.shields.io/badge/Paper-Arxiv-red?logo=arxiv&logoColor=red"
+      alt="PUMA Paper on arXiv"
+    />
+  </a>
+</p>
+
+<p align="center">
+  <img src="figure/main_fig.png" alt="PUMA Main Figure" width="700">
+</p>
 
 ---
 
