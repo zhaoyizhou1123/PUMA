@@ -20,6 +20,7 @@ training:
   num_epochs: 8
   max_grad_norm: 1.0
   batch_size: 128 # This should now be global batch size
+  lr_scaling_mode: "linear"
   warmup_steps: 500
   logging_steps: 100
   eval_steps: 1000

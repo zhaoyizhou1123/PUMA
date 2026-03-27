@@ -56,6 +56,18 @@ class SudokuDataset(Dataset):
                         print(meta["givens_violations"])
                 np.save(test_mdm_path, new_labels)
                 print(f"test_mdm_n{n}.npy saved")
+        elif sudoku_type == "preprocessed":
+            # data is already in MDM format: shape (N, 2*n^4)
+            mmap_mode_load = "r" if mmap else None
+            self.labels = np.load(os.path.join(data_dir, "train_mdm.npy"),
+                                  allow_pickle=True, mmap_mode=mmap_mode_load)
+            seq_len = self.labels.shape[1]
+            # infer n from seq_len = 2*n^4
+            n = round((seq_len / 2) ** 0.25)
+            assert 2 * n ** 4 == seq_len, f"seq_len {seq_len} is not 2*n^4 for any integer n"
+            self.n = n
+            self.n4 = n ** 4
+            self.seq_len = seq_len
         else:
             raise ValueError(f"Invalid sudoku data type: {sudoku_type}")
 
