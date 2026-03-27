@@ -111,6 +111,7 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
     unmasking_num = sampling_cfg.unmasking_num
     edit_freq = sampling_cfg.get("edit_freq", -1) # omega
     edit_step = sampling_cfg.get("edit_step", 0) # S
+    edit_start = sampling_cfg.get("edit_start", 0) # the first step to start editing, default to 0 (start editing from the first step)
     edit_strategy = sampling_cfg.get("edit_strategy", "edit")  # "edit" or "gibbs_edit"
     if prompt_mask is None:
         prompt_mask = torch.zeros_like(xt, dtype=torch.bool) # All responses
@@ -119,15 +120,19 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
 
     # shape
     B, L = xt.shape
+    L_eff = (~prompt_mask).sum(dim=1).max().item() # effective sequence length to unmask (excluding prompt)
     xt = xt.clone()
     if track:
         track_xt = []
+        edit_infos = []
 
     if arm_init:
         xt_t1, xt = xt[:, :1], xt[:, 1:]
-        L = L - 1
+        # L = L - 1
+        L_eff = L_eff - 1
 
-    for i in range(L // unmasking_num + 1):
+    # for i in range(L // unmasking_num + 1):
+    for i in range((L_eff-1) // unmasking_num + 1): 
         # mask indicies
         mask_indices = (xt == mask_id)
 
@@ -138,11 +143,19 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled = torch.cuda.is_available()):
             logits = model(torch.cat([xt_t1, xt], dim=1) if arm_init else xt) # [B, L, V]
 
-        if edit_freq > 0 and (i + 1) % edit_freq == 0:
+        if edit_freq > 0 and (i + 1) % edit_freq == 0 and i>=edit_start: # don't edit in the last step after all tokens are revealed
             if edit_strategy == "gibbs_edit":
-                xt, logits = mdm_gibbs_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device, arm_init)
+                xt, logits, edit_info = mdm_gibbs_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device, arm_init, track=track, step=i)
+            elif edit_strategy == "gibbs_edit_v2":
+                xt, logits, edit_info = mdm_gibbs_edit_sampling_v2(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device, arm_init, track=track, step=i)
+                mask_indices = (xt == mask_id)  # recompute: gibbs_edit_v2 may remask different positions
+            elif edit_strategy == "gibbs_standard":
+                xt, logits, edit_info = mdm_gibbs_standard_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device, arm_init, track=track, step=i)
+                mask_indices = (xt == mask_id)  # recompute: may remask different positions
             else:
-                xt, logits = mdm_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device, arm_init)
+                xt, logits, edit_info = mdm_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device, arm_init)
+            if track:
+                edit_infos.append(edit_info)
 
         if arm_init:
             logits = logits[:, :-1, :]
@@ -189,7 +202,7 @@ def mdm_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, 
         xt = torch.cat([xt_t1, xt], dim=1)
     if track:
         track_xt = torch.stack(track_xt, dim=0) # (T, B, L)
-        return xt, track_xt
+        return xt, {"track_xt": track_xt, "edit_infos": edit_infos}
     else:
         return xt
 
@@ -203,10 +216,10 @@ def mdm_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, dev
 
     B, L = xt.shape
     edit_step = sampling_cfg.edit_step
-    unmask_indices = (xt != mask_id)
+    unmask_indices = (xt != mask_id) # wait, xt include prompt, so this is useless
     if unmask_indices.sum() == 0:
-        return xt, logits
-    
+        return xt, logits, {}
+
     new_pred = torch.argmax(logits, dim=-1) # [B, L]
     yt = torch.where(~prompt_mask, new_pred, xt) # only edit the response part, keep the prompt unchanged
     for i in range(edit_step):
@@ -216,7 +229,7 @@ def mdm_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, dev
         yt = torch.where(~prompt_mask, new_pred, xt) # only update the response part
     # Replace unmasked tokens
     xt = torch.where(unmask_indices, yt, xt)
-    return xt, logits
+    return xt, logits, {}
     
 def mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device: torch.device = None, track: bool = False, arm_init: bool = False, prompt_mask: torch.Tensor = None):
     '''
@@ -318,32 +331,125 @@ def mdm_multi_proseco_sampling(model, xt, mask_id, sampling_cfg, device: torch.d
         return xt
 
 @torch.no_grad()
-def mdm_gibbs_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device: torch.device = None, arm_init: bool = False):
+def mdm_gibbs_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device: torch.device = None, arm_init: bool = False, track: bool = False, step: int = 0):
     '''
-    Like mdm_edit_sampling, but after updating tokens, randomly remasks the same number
-    of tokens that were masked in xt before the update (Gibbs-style remasking step).
+    Like mdm_edit_sampling, but after updating tokens, remasks the same number of tokens
+    that were masked in xt before the update (Gibbs-style remasking step).
+
+    remasking_strategy (from sampling_cfg):
+      "random"         -- uniform random remasking (default)
+      "low_confidence" -- remask the num_masks response tokens with lowest max-probability
+
+    track: if True, records the cross entropy loss (logits vs yt) at each edit step and
+           returns it as a third return value.
     '''
     assert arm_init == False, "ARM initialization is not compatible with edit sampling currently"
 
     B, L = xt.shape
     edit_step = sampling_cfg.edit_step
+    threshold = sampling_cfg.get("threshold", None)
+    remasking_strategy = sampling_cfg.get("remasking_strategy", "random")
     unmask_indices = (xt != mask_id)
-    if unmask_indices.sum() == 0:
-        return xt, logits
+    # if unmask_indices.sum() == 0:
+    #     return xt, logits, {"losses": []} if track else {}
+
+    # Skip edit steps if average token confidence exceeds threshold
+    if threshold is not None:
+        p = F.softmax(logits, dim=-1)  # (B, L, V)
+        token_prob = p.gather(-1, xt.unsqueeze(-1)).squeeze(-1)  # (B, L)
+        response_mask = ~prompt_mask
+        avg_confidence = token_prob[response_mask].mean().item() if response_mask.any() else 1.0
+        if avg_confidence > threshold:
+            edit_step = 1
+    # elif step < 1: # debugging
+        # edit_step = 10
 
     # Count masks per sequence before update
     num_masks = (xt == mask_id).sum(dim=-1)  # (B,)
 
+    losses = []
     new_pred = torch.argmax(logits, dim=-1)  # [B, L]
     yt = torch.where(~prompt_mask, new_pred, xt)
     for i in range(edit_step):
-        # Vectorized random remasking: pick num_masks[b] random response positions per sequence
+        # Remask num_masks[b] response positions per sequence
         k_max = int(num_masks.max().item())
         if k_max > 0:
-            rand_scores = torch.where(~prompt_mask,
-                                      torch.rand(B, L, device=xt.device),
-                                      torch.full((B, L), -float('inf'), device=xt.device))
-            _, top_indices = torch.topk(rand_scores, k=k_max, dim=-1)  # (B, k_max)
+            if remasking_strategy == "low_confidence":
+                # Remask the least confident response positions according to current logits
+                conf = F.softmax(logits, dim=-1).max(dim=-1).values  # (B, L)
+                remask_scores = torch.where(~prompt_mask,
+                                            -conf,  # negate: topk picks lowest confidence
+                                            torch.full((B, L), -float('inf'), device=xt.device))
+            else:  # "random"
+                remask_scores = torch.where(~prompt_mask,
+                                            torch.rand(B, L, device=xt.device),
+                                            torch.full((B, L), -float('inf'), device=xt.device))
+            _, top_indices = torch.topk(remask_scores, k=k_max, dim=-1)  # (B, k_max)
+            valid = torch.arange(k_max, device=xt.device).unsqueeze(0) < num_masks.unsqueeze(1)  # (B, k_max)
+            remask = torch.zeros(B, L, dtype=torch.bool, device=xt.device)
+            remask.scatter_(1, top_indices, valid)
+            yt = yt.clone()
+            yt[remask] = mask_id
+
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+            logits = model(yt)  # [B, L, V]
+        new_pred = torch.argmax(logits, dim=-1)  # [B, L]
+        yt = torch.where(~prompt_mask, new_pred, xt)
+
+        if track:
+            response_mask = ~prompt_mask
+            loss = F.cross_entropy(logits[response_mask], yt[response_mask])
+            losses.append(loss.item())
+
+    # For the last step, we remask according to the original xt, instead of random or other strategy. This makes inference stable. Note that here yt is fully revealed.
+    # Replace unmasked tokens
+    xt = torch.where(unmask_indices, yt, xt)
+    # xt = yt.clone()
+    return xt, logits, {"losses": losses} if track else {}
+
+@torch.no_grad()
+def mdm_gibbs_edit_sampling_v2(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device: torch.device = None, arm_init: bool = False, track: bool = False, step: int = 0):
+    '''
+    Like mdm_gibbs_edit_sampling, but after the for loop, remasks yt using the same
+    remasking strategy (based on num_masks from the original xt) and returns it as the new xt.
+    '''
+    assert arm_init == False, "ARM initialization is not compatible with edit sampling currently"
+
+    B, L = xt.shape
+    edit_step = sampling_cfg.edit_step
+    threshold = sampling_cfg.get("threshold", None)
+    remasking_strategy = sampling_cfg.get("remasking_strategy", "random")
+
+    # Skip edit steps if average token confidence exceeds threshold
+    if threshold is not None:
+        p = F.softmax(logits, dim=-1)  # (B, L, V)
+        token_prob = p.gather(-1, xt.unsqueeze(-1)).squeeze(-1)  # (B, L)
+        response_mask = ~prompt_mask
+        avg_confidence = token_prob[response_mask].mean().item() if response_mask.any() else 1.0
+        if avg_confidence > threshold:
+            edit_step = 1
+
+    # Count masks per sequence before update
+    num_masks = (xt == mask_id).sum(dim=-1)  # (B,)
+
+    losses = []
+    new_pred = torch.argmax(logits, dim=-1)  # [B, L]
+    yt = torch.where(~prompt_mask, new_pred, xt)
+    for i in range(edit_step):
+        # Remask num_masks[b] response positions per sequence
+        k_max = int(num_masks.max().item())
+        if k_max > 0:
+            if remasking_strategy == "low_confidence":
+                conf = F.softmax(logits, dim=-1).max(dim=-1).values  # (B, L)
+                remask_scores = torch.where(~prompt_mask,
+                                            -conf,
+                                            torch.full((B, L), -float('inf'), device=xt.device))
+            else:  # "random"
+                remask_scores = torch.where(~prompt_mask,
+                                            torch.rand(B, L, device=xt.device),
+                                            torch.full((B, L), -float('inf'), device=xt.device))
+            _, top_indices = torch.topk(remask_scores, k=k_max, dim=-1)  # (B, k_max)
             valid = torch.arange(k_max, device=xt.device).unsqueeze(0) < num_masks.unsqueeze(1)  # (B, k_max)
             remask = torch.zeros(B, L, dtype=torch.bool, device=xt.device)
             remask.scatter_(1, top_indices, valid)
@@ -354,9 +460,120 @@ def mdm_gibbs_edit_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mas
             logits = model(yt)  # [B, L, V]
         new_pred = torch.argmax(logits, dim=-1)  # [B, L]
         yt = torch.where(~prompt_mask, new_pred, xt)
-    # Replace unmasked tokens
-    xt = torch.where(unmask_indices, yt, xt)
-    return xt, logits
+
+        if track:
+            response_mask = ~prompt_mask
+            loss = F.cross_entropy(logits[response_mask], yt[response_mask])
+            losses.append(loss.item())
+
+    # After the for loop, remask yt using the same strategy and return as new xt.
+    # yt is fully revealed here; we remask num_masks response tokens per sequence.
+    # Even if k_max == 0 (no masks), we still apply the correction via argmax; just skip remasking.
+    k_max = int(num_masks.max().item())
+    new_pred = torch.argmax(logits, dim=-1)  # [B, L]
+    yt = torch.where(~prompt_mask, new_pred, xt)
+    if k_max > 0:
+        if remasking_strategy == "low_confidence":
+            conf = F.softmax(logits, dim=-1).max(dim=-1).values  # (B, L)
+            remask_scores = torch.where(~prompt_mask,
+                                        -conf,
+                                        torch.full((B, L), -float('inf'), device=xt.device))
+        else:  # "random"
+            remask_scores = torch.where(~prompt_mask,
+                                        torch.rand(B, L, device=xt.device),
+                                        torch.full((B, L), -float('inf'), device=xt.device))
+        _, top_indices = torch.topk(remask_scores, k=k_max, dim=-1)  # (B, k_max)
+        valid = torch.arange(k_max, device=xt.device).unsqueeze(0) < num_masks.unsqueeze(1)  # (B, k_max)
+        remask = torch.zeros(B, L, dtype=torch.bool, device=xt.device)
+        remask.scatter_(1, top_indices, valid)
+        yt = yt.clone()
+        yt[remask] = mask_id
+
+    return yt, logits, {"losses": losses} if track else {}
+
+
+def mdm_gibbs_standard_sampling(logits, model, xt, mask_id, sampling_cfg, prompt_mask, device: torch.device = None, arm_init: bool = False, track: bool = False, step: int = 0):
+    '''
+    Like mdm_gibbs_edit_sampling_v2, but only reveals currently masked tokens
+    (instead of all non-prompt tokens) at each step.
+    '''
+    assert arm_init == False, "ARM initialization is not compatible with edit sampling currently"
+
+    B, L = xt.shape
+    edit_step = sampling_cfg.edit_step
+    threshold = sampling_cfg.get("threshold", None)
+    remasking_strategy = sampling_cfg.get("remasking_strategy", "random")
+
+    # Skip edit steps if average token confidence exceeds threshold
+    if threshold is not None:
+        p = F.softmax(logits, dim=-1)  # (B, L, V)
+        token_prob = p.gather(-1, xt.unsqueeze(-1)).squeeze(-1)  # (B, L)
+        response_mask = ~prompt_mask
+        avg_confidence = token_prob[response_mask].mean().item() if response_mask.any() else 1.0
+        if avg_confidence > threshold:
+            edit_step = 1
+
+    # Count masks per sequence before update
+    num_masks = (xt == mask_id).sum(dim=-1)  # (B,)
+
+    losses = []
+    new_pred = torch.argmax(logits, dim=-1)  # [B, L]
+    # Only reveal masked tokens (not all non-prompt tokens)
+    yt = torch.where(xt == mask_id, new_pred, xt)
+    for i in range(edit_step):
+        # Remask num_masks[b] response positions per sequence
+        k_max = int(num_masks.max().item())
+        if k_max > 0:
+            if remasking_strategy == "low_confidence":
+                conf = F.softmax(logits, dim=-1).max(dim=-1).values  # (B, L)
+                remask_scores = torch.where(~prompt_mask,
+                                            -conf,
+                                            torch.full((B, L), -float('inf'), device=xt.device))
+            else:  # "random"
+                remask_scores = torch.where(~prompt_mask,
+                                            torch.rand(B, L, device=xt.device),
+                                            torch.full((B, L), -float('inf'), device=xt.device))
+            _, top_indices = torch.topk(remask_scores, k=k_max, dim=-1)  # (B, k_max)
+            valid = torch.arange(k_max, device=xt.device).unsqueeze(0) < num_masks.unsqueeze(1)  # (B, k_max)
+            remask = torch.zeros(B, L, dtype=torch.bool, device=xt.device)
+            remask.scatter_(1, top_indices, valid)
+            yt = yt.clone()
+            yt[remask] = mask_id
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+            logits = model(yt)  # [B, L, V]
+        new_pred = torch.argmax(logits, dim=-1)  # [B, L]
+        # Only reveal masked tokens
+        yt = torch.where(yt == mask_id, new_pred, yt)
+
+        if track:
+            response_mask = ~prompt_mask
+            loss = F.cross_entropy(logits[response_mask], yt[response_mask])
+            losses.append(loss.item())
+
+    # After the for loop, remask yt using the same strategy and return as new xt.
+    k_max = int(num_masks.max().item())
+    new_pred = torch.argmax(logits, dim=-1)  # [B, L]
+    yt = torch.where(yt == mask_id, new_pred, yt)
+    if k_max > 0:
+        if remasking_strategy == "low_confidence":
+            conf = F.softmax(logits, dim=-1).max(dim=-1).values  # (B, L)
+            remask_scores = torch.where(~prompt_mask,
+                                        -conf,
+                                        torch.full((B, L), -float('inf'), device=xt.device))
+        else:  # "random"
+            remask_scores = torch.where(~prompt_mask,
+                                        torch.rand(B, L, device=xt.device),
+                                        torch.full((B, L), -float('inf'), device=xt.device))
+        _, top_indices = torch.topk(remask_scores, k=k_max, dim=-1)  # (B, k_max)
+        valid = torch.arange(k_max, device=xt.device).unsqueeze(0) < num_masks.unsqueeze(1)  # (B, k_max)
+        remask = torch.zeros(B, L, dtype=torch.bool, device=xt.device)
+        remask.scatter_(1, top_indices, valid)
+        yt = yt.clone()
+        yt[remask] = mask_id
+
+    return yt, logits, {"losses": losses} if track else {}
+
 
 @torch.no_grad()
 def mdm_sampling_block(model, xt, block_size, mask_id, sampling_cfg, device: torch.device = None):

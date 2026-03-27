@@ -103,10 +103,12 @@ def main(cfg: DictConfig):
     train_cfg = cfg.training
 
     # Create logdir
-    datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    logdir = os.path.join("track", cfg.wandb.project, cfg.wandb.name, datetime_str)
-    os.makedirs(logdir, exist_ok=True)
-    print(f"Logging to {logdir}")
+    logdir = None
+    if cfg.validation.get("track", False):
+        datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        logdir = os.path.join("track", cfg.wandb.project, cfg.wandb.name, datetime_str)
+        os.makedirs(logdir, exist_ok=True)
+        print(f"Logging to {logdir}")
 
     # set device
     if torch.cuda.is_available():

@@ -2,6 +2,7 @@ import torch
 import os
 import numpy as np
 import math
+import pickle
 import torch.distributed as dist
 from sampling import mdm_sampling
 from tqdm import tqdm
@@ -48,9 +49,9 @@ def evaluate_ddp_sudoku(model, cfg, device, rank: int, world_size: int, sampling
             if not cfg.validation.track or j >= 1:
                 pred = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask)
             else: # Only track the first batch for visualization/debugging
-                pred, track_xt = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask, track=True)
-                track_xt = track_xt.cpu().numpy()  # (T, B, 162)
-                np.save(os.path.join(logdir, f"step{step}_rank{rank}.npy"), track_xt)
+                pred, extra_info = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask, track=True)
+                with open(os.path.join(logdir, f"step{step}_rank{rank}.pkl"), "wb") as f:
+                    pickle.dump(extra_info, f)
 
             matches = verify_sudoku(pred, batch_Y)
             local_correct += matches.sum().item()
