@@ -1,0 +1,166 @@
+import math, os, time, json, random, sys, datetime
+import hydra
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import wandb
+import torch.distributed as dist
+import argparse
+from copy import deepcopy
+from tqdm import tqdm
+from data import setup_data_bundle
+from torch.utils.data import DataLoader
+from torch.utils.data import Subset
+from typing import Optional, List, Tuple, Union
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from transformers import get_cosine_schedule_with_warmup
+from omegaconf import OmegaConf, DictConfig, ListConfig, open_dict
+from progressive import PhasedMaskingEdit, mdm_edit_loss_fn, mdm_loss_fn
+from eval.sudoku_eval import evaluate_ddp_sudoku
+from eval.gsm8k_eval import evaluate_ddp_gsm8k
+from eval.gsm8k_smdm_eval import evaluate_ddp_gsm8k as evaluate_ddp_gsm8k_smdm
+
+# SMDM imports
+SMDM_PATH = "/home/zhaoyiz/projects/SMDM"
+sys.path.insert(0, SMDM_PATH)
+from lit_gpt.model_cache import Config as SMDMConfig
+from lit_gpt.diffmodel import TransEncoder
+from safetensors.torch import load_file
+
+# def parse_args():
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument("--cfg", type=str)
+#     return parser.parse_args()
+
+
+def setup_ddp():
+    if torch.cuda.is_available() and "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        dist.init_process_group(backend="nccl")
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        torch.cuda.set_device(local_rank)
+    else:
+        rank, world_size, local_rank = 0, 1, 0
+    return rank, world_size, local_rank
+
+def evaluate_ddp_dict(model, cfg, device, rank, world_size, step=0, logdir=None):
+    sampling = cfg.validation.sampling
+    if cfg.training.strategy == "arm":
+        return {"arm": evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)}
+    base_sampling = sampling
+    out = {}
+    edit_freq_list = list(base_sampling.edit_freq) if hasattr(base_sampling, "edit_freq") else [None]
+    edit_step_list = list(base_sampling.edit_step) if hasattr(base_sampling, "edit_step") else [None]
+    for confidence in list(base_sampling.confidence):
+        for unmasking_num in list(base_sampling.unmasking_num):
+            for edit_freq in edit_freq_list:
+                for edit_step in edit_step_list:
+                    sampling = deepcopy(base_sampling)
+                    sampling.confidence = confidence
+                    sampling.unmasking_num = unmasking_num
+                    metric_name = f"{confidence}_unmasking_{unmasking_num}"
+                    if edit_freq is not None:
+                        sampling.edit_freq = edit_freq
+                        metric_name += f"_editfreq_{edit_freq}"
+                    if edit_step is not None:
+                        sampling.edit_step = edit_step
+                        metric_name += f"_editstep_{edit_step}"
+                    out[metric_name] = evaluate_ddp(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir, metric_name=metric_name)
+    return out
+
+def evaluate_ddp(model, cfg, device, rank: int, world_size: int, sampling, step=0, logdir=None, metric_name=""):
+    if cfg.data.dataset == "sudoku":
+        return evaluate_ddp_sudoku(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir)
+    elif cfg.data.dataset == "tinygsm":
+        return evaluate_ddp_gsm8k(model, cfg, device, rank, world_size, sampling, logdir=logdir, metric_name=metric_name)
+    elif cfg.data.dataset == "gsm8k_smdm":
+        return evaluate_ddp_gsm8k_smdm(model, cfg, device, rank, world_size, sampling, logdir=logdir, metric_name=metric_name)
+    elif cfg.data.dataset == "maze":
+        from eval.maze_eval import evaluate_ddp_maze
+        return evaluate_ddp_maze(model, cfg, device, rank, world_size, sampling, step=step, logdir=logdir, metric_name=metric_name)
+    else:
+        raise ValueError(f"Invalid dataset: {cfg.data.dataset}")
+
+@hydra.main(version_base=None, config_path="../yaml_files/maze", config_name="maze")
+def main(cfg: DictConfig):
+    # setup the DDP
+    rank, world_size, local_rank = setup_ddp()
+    is_main = (rank == 0)
+    if is_main:
+        print("Hey, we start training!")
+        print(f"Training with {world_size} GPUs")
+
+    base_seed = cfg.data.seed
+    seed = base_seed + rank
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.cuda.manual_seed(seed)
+
+    data_cfg = cfg.data
+    train_cfg = cfg.training
+
+    # Create logdir
+    logdir = None
+    if cfg.validation.get("track", False):
+        datetime_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        logdir = os.path.join("track", cfg.wandb.project, cfg.wandb.name, datetime_str)
+        os.makedirs(logdir, exist_ok=True)
+        print(f"Logging to {logdir}")
+
+    # set device
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device("cpu")
+
+    # Initialize the SMDM TransEncoder model
+    smdm_model_name = cfg.model.get("smdm_model_name", "Diff_LLaMA_1028M")
+    smdm_config = SMDMConfig.from_name(smdm_model_name)
+    model = TransEncoder(smdm_config).to(device)
+
+    assert 'ckpt_path' in cfg.validation, "ckpt_path must be specified in the config for evaluation"
+    ckpt_path = cfg.validation.ckpt_path
+    print(f"Loading SMDM checkpoint from {ckpt_path}")
+    if ckpt_path.endswith(".safetensors"):
+        sd = load_file(ckpt_path)
+    else:
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+        sd = ckpt.get("model", ckpt.get("model_state_dict", ckpt))
+    model.load_state_dict(sd)
+
+
+    if is_main:
+        num_params = sum(p.numel() for p in model.parameters())
+        print(f"Model is ready, parameters: {num_params/1e6:.2f}M")
+
+    # model wrapping
+    if world_size > 1 and torch.cuda.is_available():
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        if is_main:
+            print(f"Model wrapping is done!")
+
+    model.eval()
+
+    val_acc_dict = evaluate_ddp_dict(model, cfg, device, rank, world_size, logdir=logdir)
+
+    if is_main:
+        # eval acc logging
+        for key, value in val_acc_dict.items():
+            print(f"Validation Accuracy {key}: {value}")
+                
+    
+    if world_size > 1 and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    # args = parse_args()
+    # cfg_path = args.cfg
+    # cfg = OmegaConf.load(cfg_path)
+    # main(cfg)
+    main()

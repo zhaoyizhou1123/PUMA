@@ -9,11 +9,20 @@ import math
 
 def mdm_loss_fn(log_probs: torch.Tensor, x0: torch.Tensor, xt: torch.Tensor, mask_id: int, prompt_mask: torch.Tensor, arm_init: bool = False) -> torch.Tensor:
     """
-    compute the MDM (reweighted) loss with the given probs 
+    compute the MDM (reweighted) loss with the given probs
     the progessive masking strategy requires log probs, so we cannot use the CE loss directly
     """
     B, L, V = log_probs.shape
     masked = (xt == mask_id)
+
+    # DEBUG
+    # print(f"[mdm_loss_fn] xt shape={xt.shape}, x0 shape={x0.shape}, prompt_mask shape={prompt_mask.shape}")
+    # print(f"[mdm_loss_fn] xt:\n{xt}")
+    # print(f"[mdm_loss_fn] x0:\n{x0}")
+    # print(f"[mdm_loss_fn] prompt_mask:\n{prompt_mask}")
+    # print(f"[mdm_loss_fn] num masked tokens: {masked.sum().item()}")
+
+    # print(f"[mdm_loss_fn] xt[0] response part: {xt[0][prompt_mask[0] == 0]}")
 
     if arm_init:
         masked = masked[:, 1:]
@@ -32,6 +41,7 @@ def mdm_loss_fn(log_probs: torch.Tensor, x0: torch.Tensor, xt: torch.Tensor, mas
     nll = -log_probs.gather(dim = -1, index = x0.unsqueeze(-1)).squeeze(-1)
     per_seq_loss = (nll * masked).sum(dim = 1, keepdim=True)
 
+    # print(f"avg loss: {(nll * masked).mean().item()}, avg num_mask: {num_mask.mean().item()}, avg loss per masked token: {(per_seq_loss / num_mask).mean().item()}")
     # calculate the weights per seq
     return (per_seq_loss / num_mask).sum() / B
 

@@ -1,0 +1,46 @@
+model:
+  smdm_model_name: "Diff_LLaMA_170M"
+  pretrain_path: "/home/zhaoyiz/projects/SMDM/models/mdm-170M-10e18.safetensors"
+
+training:
+  strategy: "standard"
+  confidence_threshold: 0.9
+  mode: "standard"
+  K: 8
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  num_epochs: 10
+  max_grad_norm: 1.0
+  batch_size: 128
+  warmup_steps: 500
+  logging_steps: 1
+  eval_steps: 5000
+  save_steps: 5000
+  ema: null
+  eos_id: 2  # TinyLlama EOS token id
+
+validation:
+  val_dir: "none"
+  sampling:
+    temperature: 0.0
+    confidence: ["top_k"]
+    unmasking_num: [1]
+    eos_id: 2
+
+data:
+  mask_id: 32000  # TinyLlama pad token used as mask in SMDM
+  tokenizer_name: "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"
+  dataset: "gsm8k_smdm"
+  val_ratio: 0.02
+  seed: 123
+  gsm8k_test_path: "/home/zhaoyiz/projects/SMDM/data/gsm8k/test.jsonl"
+  test_ratio: 0.1
+  training:
+    cpus: 4
+  max_len: 192
+
+wandb:
+  wandb: true
+  project: "gsm8k-smdm"
+  name: "${training.K}-${training.strategy}-170M"
+  entity: "your-entity-here"

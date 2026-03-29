@@ -1,12 +1,12 @@
-export CUDA_VISIBLE_DEVICES=2
+export CUDA_VISIBLE_DEVICES=0
 
 MASTER_ADDR=localhost
-MASTER_PORT=29501
+MASTER_PORT=29500
 
 logfile=eval_standard.log
 
 EDIT_START=0
-for EDIT_STEP in 0 25 50 75 100 125 150 175 200; do
+for EDIT_STEP in 1500; do
   echo "=== edit_step=${EDIT_STEP}, edit_start=${EDIT_START} ===" >> $logfile 2>&1
   torchrun \
     --nnodes=1 \

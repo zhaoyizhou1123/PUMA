@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 pattern = r"Validation Accuracy top_k_unmasking_1_editfreq_1_editstep_(\d+): ([0-9.]+)"
 
 data = []
-with open("../eval.log") as f:
+with open("../eval_standard.log") as f:
     for line in f:
         m = re.search(pattern, line)
         if m:
@@ -17,27 +17,6 @@ steps = np.array(steps, dtype=float)
 accs  = np.array(accs,  dtype=float)
 
 MODELS = [
-    # dict(
-    #     name="Exponential",
-    #     fn=lambda n, A, B, k: A + B * np.exp(-k * n),
-    #     p0=lambda: [accs.max(), accs.min() - accs.max(), 0.005],
-    #     label=lambda p, r2: (rf"Exponential: $A + B\,e^{{-kn}}$"
-    #                          f"\n$A={p[0]:.4f}$, $B={p[1]:.4f}$, $k={p[2]:.5f}$, $R^2={r2:.4f}"),
-    # ),
-    # dict(
-    #     name="Power law",
-    #     fn=lambda n, A, B, k: A - B * (n + 1) ** (-k),
-    #     p0=lambda: [accs.max(), accs.max() - accs.min(), 0.5],
-    #     label=lambda p, r2: (rf"Power law: $A - B\,(n+1)^{{-k}}$"
-    #                          f"\n$A={p[0]:.4f}$, $B={p[1]:.4f}$, $k={p[2]:.4f}$, $R^2={r2:.4f}"),
-    # ),
-    # dict(
-    #     name="Logarithmic",
-    #     fn=lambda n, A, B: A + B * np.log(n + 1),
-    #     p0=lambda: [accs.min(), 0.01],
-    #     label=lambda p, r2: (rf"Logarithmic: $A + B\,\ln(n+1)$"
-    #                          f"\n$A={p[0]:.4f}$, $B={p[1]:.5f}$, $R^2={r2:.4f}"),
-    # ),
     dict(
         name="Stretched exp",
         fn=lambda n, A, B, k, beta: A + B * np.exp(-k * (n + 1) ** beta),
@@ -69,9 +48,9 @@ for model, color in zip(MODELS, colors):
 
 ax.set_xlabel("Edit Step")
 ax.set_ylabel("Accuracy")
-ax.set_title("Accuracy vs Edit Step — Curve Fits")
+ax.set_title("Accuracy vs Edit Step — Curve Fits (Standard)")
 ax.legend()
 ax.grid(True)
 plt.tight_layout()
-plt.savefig("edit_fit.png", dpi=150)
-print("Saved stats/edit_fit.png")
+plt.savefig("standard_fit.png", dpi=150)
+print("Saved stats/standard_fit.png")

@@ -1,0 +1,29 @@
+model:
+  smdm_model_name: "Diff_LLaMA_1028M"
+
+training:
+  strategy: "standard"
+  batch_size: 32
+
+validation:
+  ckpt_path: "/home/zhaoyiz/projects/SMDM/workdir/finetune/mdm-gsm8k-1028M/iter-080000-ckpt.pth"
+  val_dir: "none"
+  sampling:
+    temperature: 0.0
+    confidence: ["top_k"]
+    unmasking_num: [1]
+    eos_id: 2  # TinyLlama EOS token id
+
+data:
+  mask_id: 32000  # TinyLlama pad token used as mask in SMDM
+  tokenizer_name: "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"
+  dataset: "gsm8k_smdm"
+  seed: 123
+  test_ratio: 0.1
+  gsm8k_test_path: "/home/zhaoyiz/projects/SMDM/data/gsm8k/test.jsonl"
+
+wandb:
+  wandb: false
+  project: "smdm-eval"
+  name: "smdm-gsm8k"
+  entity: "your-entity-here"

@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 from .sudoku import split_sudoku
 from .tiny_gsm import split_tinygsm
+from .gsm8k_smdm import split_gsm8k_smdm
 
 
 @dataclass
@@ -31,7 +32,9 @@ def setup_data_bundle(config: DictConfig) -> DatasetBundle:
     elif config.dataset == "maze":
         from .maze import split_maze
         train_data, val_data = split_maze(config.data_dir, val_ratio=config.val_ratio, seed=config.seed)
-    
+    elif config.dataset == "gsm8k_smdm":
+        train_data, val_data = split_gsm8k_smdm(val_ratio=config.val_ratio, seed=config.seed)
+
     train_loader = DataLoader(
         train_data,
         batch_size=config.training.per_gpu_batch_size,
