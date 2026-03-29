@@ -41,7 +41,7 @@ echo "=========================================="
 
 cd /home/frankwu2/PUMA
 
-source venv/bin/activate
+source /data/user_data/frankwu2//PUMA/venv/bin/activate
 
 mkdir -p logs
 
@@ -68,6 +68,8 @@ torchrun --nproc_per_node=1 -m maze.train \
     training.strategy=progressive_edit \
     training.eval_steps=5000 \
     training.save_steps=5000 \
+    +training.ckpt_root=/data/user_data/frankwu2/PUMA/checkpoints \
+    validation.val_dir=/data/user_data/frankwu2/PUMA/data/sudoku_hard \
     validation.sampling.unmasking_num=[1] \
     +validation.sampling.edit_freq=[3] \
     +validation.sampling.edit_step=[4] \

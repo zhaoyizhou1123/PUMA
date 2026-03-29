@@ -67,6 +67,8 @@ torchrun --nproc_per_node=1 -m maze.train \
     --config-name base \
     training.eval_steps=5000 \
     training.save_steps=5000 \
+    +training.ckpt_root=/data/user_data/frankwu2/PUMA/checkpoints \
+    validation.val_dir=/data/user_data/frankwu2/PUMA/data/sudoku_hard \
     validation.sampling.unmasking_num=[1] \
     +validation.sampling.edit_freq=[-1] \
     validation.track=False \
