@@ -5,14 +5,15 @@ Reference: "PRISM: Provable Self-Correction via Masked Diffusion" (arXiv 2510.01
 
 Per-batch training step:
   1. Randomly mask x0 → x_t  (uniform masking ratio, skip prompt positions)
-  2. Backbone forward (frozen by default) → logits, hidden_states
-  3. One-step unmask: greedily reveal the top-k most confident masked tokens → x_s
-  4. Binary labels: 1 if x_s[i] == x0[i] (correctly predicted), else 0
-  5. Self-correction loss: BCE on the positions that were updated in step 3
-  6. (Optional) regularisation loss: standard CE on the backbone predictions
+  2. Backbone forward on x_t → logits  (used for regularisation loss + unmask scoring)
+  3. One-step unmask: greedily reveal top-k confident masked tokens → x_s
+  4. Backbone forward on x_s → hidden_s  (adapter sees post-unmask context)
+  5. Binary labels: 1 if x_s[i] == x0[i] at updated positions, else 0
+  6. Self-correction loss: BCE(adapter(hidden_s)[updated], labels[updated])
+  7. (Optional) regularisation loss: CE(logits[masked], x0[masked]) × λ
 
-The caller is responsible for freezing backbone parameters before passing
-the model here.  See prism/train.py for the recommended usage pattern.
+Key design: adapter is trained on x_s (post-unmask hidden states), matching
+inference where it scores already-decoded tokens in a partially filled sequence.
 """
 
 from __future__ import annotations
@@ -55,58 +56,68 @@ def prism_training_step(
     x_t = torch.where(mask_indices, mask_id, x0)
 
     # ------------------------------------------------------------------
-    # 2. Backbone forward
-    #    No grad by default (backbone frozen); enable if tune_backbone=True
+    # 2. Backbone forward on x_t (for regularisation loss)
     # ------------------------------------------------------------------
     if tune_backbone:
-        logits, hidden = model.forward_with_hidden(x_t)
+        logits, _ = model.forward_with_hidden(x_t)
     else:
         with torch.no_grad():
-            logits, hidden = model.forward_with_hidden(x_t)
-        hidden = hidden.detach()    # stop grad at adapter input
+            logits, _ = model.forward_with_hidden(x_t)
 
     # ------------------------------------------------------------------
-    # 3. One-step unmask:  pick the top-k most confident masked tokens,
-    #    assign them the backbone's argmax prediction → x_s
+    # 3. One-step unmask: pick top-k confident masked tokens → x_s
+    #    x_s is the sequence AFTER decoding k tokens from x_t
     # ------------------------------------------------------------------
     with torch.no_grad():
-        p = torch.softmax(logits, dim=-1)                           # [B, L, V]
-        conf = p.max(dim=-1).values                                 # [B, L]
+        p = torch.softmax(logits, dim=-1)
+        conf = p.max(dim=-1).values
         unmask_score = torch.where(
             mask_indices, conf, torch.full_like(conf, float('-inf'))
         )
 
         k = min(num_demasking_tokens, int(mask_indices.sum(dim=-1).max().item()))
-        update_mask = torch.zeros_like(mask_indices)               # [B, L] bool
+        update_mask = torch.zeros_like(mask_indices)
 
         if k > 0:
-            _, topk_idx = unmask_score.topk(k=k, dim=-1)          # [B, k]
-            valid = mask_indices.gather(1, topk_idx)               # [B, k]
+            _, topk_idx = unmask_score.topk(k=k, dim=-1)
+            valid = mask_indices.gather(1, topk_idx)
             update_mask.scatter_(1, topk_idx, valid)
-
-            new_tokens = logits.argmax(dim=-1)                     # [B, L]
+            new_tokens = logits.argmax(dim=-1)
             x_s = torch.where(update_mask, new_tokens, x_t)
         else:
             x_s = x_t
 
     # ------------------------------------------------------------------
-    # 4. Binary labels:  1 = correctly decoded, 0 = wrong
+    # 4. Backbone forward on x_s (post-unmask) for adapter supervision.
+    #    Per the paper: adapter scores the sequence AFTER new tokens are
+    #    filled in, so it sees full context including freshly decoded tokens.
     # ------------------------------------------------------------------
-    binary_labels = (x_s == x0).float()                            # [B, L]
+    if tune_backbone:
+        _, hidden_s = model.forward_with_hidden(x_s)
+    else:
+        with torch.no_grad():
+            _, hidden_s = model.forward_with_hidden(x_s)
+        hidden_s = hidden_s.detach()
 
     # ------------------------------------------------------------------
-    # 5. Self-correction loss (adapter head trained here)
+    # 5. Binary labels: 1 = updated token is correct, 0 = wrong
+    #    Only supervise on updated_indices = positions that changed xt→xs
     # ------------------------------------------------------------------
-    n_updated = update_mask.sum().item()
+    updated_indices = update_mask  # positions that were just decoded
+    binary_labels = (x_s == x0).float()
+
+    # ------------------------------------------------------------------
+    # 6. Self-correction loss (adapter scores x_s, supervised on updated positions)
+    # ------------------------------------------------------------------
+    n_updated = updated_indices.sum().item()
     if n_updated == 0:
-        # Degenerate batch — keep computation graph alive but zero loss
-        adapter_logits = model.adapter(hidden)
+        adapter_logits = model.adapter(hidden_s)
         loss_sc = adapter_logits.sum() * 0.0
     else:
-        adapter_logits = model.adapter(hidden)                     # [B, L]
+        adapter_logits = model.adapter(hidden_s)                   # [B, L]
         loss_sc = F.binary_cross_entropy_with_logits(
-            adapter_logits[update_mask],
-            binary_labels[update_mask],
+            adapter_logits[updated_indices],
+            binary_labels[updated_indices],
         )
 
     # ------------------------------------------------------------------

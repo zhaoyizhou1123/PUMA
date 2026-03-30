@@ -92,35 +92,47 @@ def prism_sampling(
         # Per Algorithm 3 of the paper: unmask (unmasking_num + num_remask) tokens,
         # then remask num_remask low-confidence clean tokens.
         # Net progress = unmasking_num per step regardless of num_remask.
+        #
+        # Edge case: when fewer masks remain than (unmasking_num + num_remask),
+        # unmask all remaining and skip remasking — otherwise we deadlock
+        # (unmask N == remask N → zero net progress forever).
         remasking_active = (step_on <= step < step_off_val) and num_remask > 0
 
-        n_unmask = unmasking_num + (num_remask if remasking_active else 0)
-        k_max = min(n_unmask, int(mask_indices.sum(dim=-1).max().item()))
-        if k_max > 0:
-            _, sel = unmask_score.topk(k=k_max, dim=-1)
-            valid  = mask_indices.gather(1, sel)
-            upd    = torch.zeros_like(mask_indices)
-            upd.scatter_(1, sel, valid)
-            new_tok = logits_noisy.argmax(dim=-1)
-            xt = torch.where(upd, new_tok, xt)
+        per_seq_masked   = mask_indices.sum(dim=-1)                        # [B]
+        n_unmask_target  = unmasking_num + (num_remask if remasking_active else 0)
+        enough           = per_seq_masked >= n_unmask_target               # [B]
+        per_seq_n_unmask = torch.where(enough,
+            torch.full_like(per_seq_masked, n_unmask_target),
+            per_seq_masked)                                                # [B]
+        per_seq_n_remask = torch.where(enough,
+            torch.full_like(per_seq_masked, num_remask if remasking_active else 0),
+            torch.zeros_like(per_seq_masked))                             # [B]
 
-        if remasking_active:
-            clean = (~(xt == mask_id)) & (~prompt_mask)
-            n_clean = int(clean.sum(dim=-1).max().item())
-            if n_clean > 0:
-                adapter_logits = model.adapter(hidden)       # [B, L]
-                remask_score = torch.where(
-                    clean,
-                    -adapter_logits,
-                    torch.full_like(adapter_logits, float('-inf'))
-                )
-                k_rm = min(num_remask, n_clean)
-                if k_rm > 0:
-                    _, rm_idx = remask_score.topk(k=k_rm, dim=-1)
-                    rm_valid  = clean.gather(1, rm_idx)
-                    rm_mask   = torch.zeros_like(clean)
-                    rm_mask.scatter_(1, rm_idx, rm_valid)
-                    xt = torch.where(rm_mask, torch.full_like(xt, mask_id), xt)
+        k_max = int(per_seq_n_unmask.max().item())
+        if k_max > 0:
+            _, sel  = unmask_score.topk(k=k_max, dim=-1)                  # [B, k_max]
+            valid   = mask_indices.gather(1, sel)
+            k_range = torch.arange(k_max, device=xt.device).unsqueeze(0)
+            in_bud  = k_range < per_seq_n_unmask.unsqueeze(1)
+            upd     = torch.zeros_like(mask_indices)
+            upd.scatter_(1, sel, valid & in_bud)
+            new_tok = logits_noisy.argmax(dim=-1)
+            xt      = torch.where(upd, new_tok, xt)
+
+        if remasking_active and per_seq_n_remask.sum() > 0:
+            clean        = (~(xt == mask_id)) & (~prompt_mask)
+            adapter_logits = model.adapter(hidden)                         # [B, L]
+            remask_score = torch.where(clean, -adapter_logits,
+                torch.full_like(adapter_logits, float('-inf')))
+            k_rm = int(per_seq_n_remask.max().item())
+            if k_rm > 0:
+                _, rm_idx  = remask_score.topk(k=k_rm, dim=-1)
+                rm_valid   = clean.gather(1, rm_idx)
+                k_range_rm = torch.arange(k_rm, device=xt.device).unsqueeze(0)
+                in_bud_rm  = k_range_rm < per_seq_n_remask.unsqueeze(1)
+                rm_mask    = torch.zeros_like(clean)
+                rm_mask.scatter_(1, rm_idx, rm_valid & in_bud_rm)
+                xt = torch.where(rm_mask, torch.full_like(xt, mask_id), xt)
 
         if track:
             track_list.append(xt.clone().detach().cpu())

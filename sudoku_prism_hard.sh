@@ -9,6 +9,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=32
 #SBATCH --mem=128GB
+#SBATCH --exclude=babel-l5-16,babel-l5-20,babel-m9-20
 
 # ============================================================================
 # PRISM fine-tuning on sudoku_hard — Phase 2
