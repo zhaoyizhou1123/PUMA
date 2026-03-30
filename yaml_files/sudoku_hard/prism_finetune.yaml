@@ -1,0 +1,79 @@
+# ============================================================
+# PRISM fine-tuning config — sudoku_hard (n=3)
+#
+# Usage:
+#   torchrun --nproc_per_node=1 -m prism.train \
+#       --config-path ../yaml_files/sudoku_hard \
+#       --config-name prism_finetune \
+#       prism.pretrained_ckpt=/path/to/step_N.pt
+# ============================================================
+
+# ---- backbone (identical to base.yaml) ----
+model:
+  vocab_size: 11
+  hidden_size: 256
+  intermediate_size: 768
+  num_layers: 8
+  num_attention_heads: 8
+  num_kv_heads: 8
+  max_position: 162
+  rms_norm_eps: 1e-6
+  dropout: 0.0
+
+# ---- PRISM-specific adapter + algorithm settings ----
+prism:
+  pretrained_ckpt: "none"         # set via CLI: prism.pretrained_ckpt=...
+  adapter_hidden: 64              # hidden dim of the two-layer adapter MLP
+  num_demasking_tokens: 16        # k: tokens revealed in one training step
+  reg_lambda: 0.5                 # weight on backbone CE regularisation loss
+  tune_backbone: false            # if true, backbone also receives gradients
+  # inference / PRISM-sampling settings
+  num_remask: 1                   # clean tokens to remask per sampling step
+  step_on: 0                      # first step to apply adapter-guided remasking
+  step_off: 999999                # last step to apply it (default: always on)
+
+# ---- training ----
+training:
+  strategy: "standard"            # used only for logging; actual loss is PRISM
+  confidence_threshold: 0.9
+  mode: "standard"
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  num_epochs: 20                  # upper bound; max_steps takes precedence
+  max_steps: 500000
+  max_grad_norm: 1.0
+  batch_size: 128
+  lr_scaling_mode: "linear"
+  warmup_steps: 500
+  logging_steps: 100
+  eval_steps: 5000
+  save_steps: 10000
+  ema: null
+  eos_id: null
+
+validation:
+  batch_size: 1024
+  val_dir: "data/sudoku_hard"
+  ratio: 1
+  sampling:
+    temperature: 0.0
+    confidence: "top_k"
+    unmasking_num: 1
+  track: false
+
+data:
+  mask_id: 10
+  dataset: "sudoku"
+  data_dir: ${validation.val_dir}
+  sudoku_type: "preprocessed"
+  val_ratio: 0.001
+  seed: 123
+  mmap: false
+  training:
+    cpus: 4
+
+wandb:
+  wandb: true
+  project: "sudoku_hard-pretraining-corrected"
+  name: "prism-finetune-s${data.seed}"
+  entity: "your-entity-here"

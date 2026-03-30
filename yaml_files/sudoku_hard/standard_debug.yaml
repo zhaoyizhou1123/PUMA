@@ -1,0 +1,64 @@
+# ============================================================
+# Standard MDM debug config — sudoku_hard (n=3)
+# Fast smoke-test: tiny batch, few steps, no wandb
+# ============================================================
+
+model:
+  vocab_size: 11
+  hidden_size: 256
+  intermediate_size: 768
+  num_layers: 8
+  num_attention_heads: 8
+  num_kv_heads: 8
+  max_position: 162
+  rms_norm_eps: 1e-6
+  dropout: 0.0
+
+training:
+  strategy: "standard"
+  confidence_threshold: 0.9
+  mode: "standard"
+  K: 8
+  data_ratio: 1.0
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  num_epochs: 1
+  max_steps: 50
+  max_grad_norm: 1.0
+  batch_size: 4
+  lr_scaling_mode: "constant"
+  warmup_steps: 5
+  logging_steps: 10
+  eval_steps: 25
+  save_steps: 50
+  ema: null
+  eos_id: null
+
+validation:
+  batch_size: 16
+  val_dir: "data/sudoku_hard"
+  ratio: 0.01
+  sampling:
+    temperature: 0.0
+    confidence: ["top_k"]
+    unmasking_num: [1]
+    edit_freq: [-1]
+    edit_step: [4]
+  track: false
+
+data:
+  mask_id: 10
+  dataset: "sudoku"
+  data_dir: ${validation.val_dir}
+  sudoku_type: "preprocessed"
+  val_ratio: 0.001
+  seed: 123
+  mmap: false
+  training:
+    cpus: 0
+
+wandb:
+  wandb: false
+  project: "sudoku_hard-debug"
+  name: "standard-debug"
+  entity: "your-entity-here"
