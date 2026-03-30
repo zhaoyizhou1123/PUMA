@@ -11,7 +11,6 @@ from tqdm import tqdm
 def evaluate_ddp_maze(model, cfg, device, rank: int, world_size: int, sampling, step=0, logdir=None, metric_name=""):
     val_dir = cfg.validation.val_dir
     mask_id = cfg.data.mask_id
-    # track = cfg.validation.get("track", False)
 
     test_inputs = os.path.join(val_dir, "test_labels.npy")
     test_answers = os.path.join(val_dir, "test_labels.npy")
@@ -49,12 +48,16 @@ def evaluate_ddp_maze(model, cfg, device, rank: int, world_size: int, sampling, 
             # prompt_mask[:, :81] = True
             prompt_mask = torch.from_numpy(prompt_masks[s:e]).to(device)
 
-            if not cfg.validation.track or j >= 1:
-                pred = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask)
-            else: # Only track the first batch for visualization/debugging
-                pred, track_xt = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask, track=True)
-                track_xt = track_xt.cpu().numpy()  # (T, B, 162)
-                np.save(os.path.join(logdir, metric_name+f"step{step}_rank{rank}.npy"), track_xt)
+            do_track = cfg.validation.track and j == 0
+            result = mdm_sampling(model, batch_X, mask_id, sampling, device, prompt_mask=prompt_mask, track=do_track)
+            if do_track:
+                pred, extra_info = result
+                if logdir is not None:
+                    os.makedirs(logdir, exist_ok=True)
+                    with open(os.path.join(logdir, metric_name + f"step{step}_rank{rank}.pkl"), "wb") as f:
+                        pickle.dump(extra_info, f)
+            else:
+                pred = result
 
             matches = (pred == batch_Y).all(dim=1) # verify exact match for the whole solution
             local_correct += matches.sum().item()

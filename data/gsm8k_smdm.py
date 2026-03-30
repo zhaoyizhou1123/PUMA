@@ -19,9 +19,8 @@ class GSM8KSMDMDataset(Dataset):
         return {"labels": self.data[idx], "prompt_mask": self.prompt_mask[idx]}
 
 
-def split_gsm8k_smdm(val_ratio: float = 0.02, seed: int = 123):
+def split_gsm8k_smdm(data_dir: str, val_ratio: float = 0.02, seed: int = 123):
     import os
-    data_dir = os.path.join(os.path.dirname(__file__), "gsm8k")
     data = torch.from_numpy(np.load(os.path.join(data_dir, "train_label.npy"))).long()
     prompt_mask = torch.from_numpy(np.load(os.path.join(data_dir, "train_prompt_mask.npy"))).bool()
 

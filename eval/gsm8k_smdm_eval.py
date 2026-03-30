@@ -9,6 +9,7 @@ import torch.distributed as dist
 import re
 import json
 import warnings
+import pickle
 from transformers import AutoTokenizer
 from sampling import mdm_sampling, mdm_sampling_block, arm_sampling
 from tqdm import tqdm
@@ -54,7 +55,7 @@ def extract_gsm8k_final_answer(ans_text: str) -> str:
         return nums[-1].replace(",", "") if nums else ""
     return m.group(1).replace(",", "")
 
-def test_gsm8k_tokenization(mask_id: int, tokenizer_name: str = None, data_path: str = None):
+def test_gsm8k_tokenization(mask_id: int, tokenizer_name: str = None, data_path: str = None, cache_dir: str = None):
     """
     Creates/loads a tokenized GSM8K test cache.
     Cache path is keyed by tokenizer name (and data source) to avoid collisions.
@@ -71,7 +72,8 @@ def test_gsm8k_tokenization(mask_id: int, tokenizer_name: str = None, data_path:
     resp_max = RESPONSE_MAX_LEN
     tok_tag = (tokenizer_name).replace("/", "_")
     src_tag = os.path.basename(data_path).replace(".", "_") if data_path else "hf"
-    out_path = os.path.join("data", "gsm8k", f"test_mdm_{tok_tag}_{src_tag}_prompt{prompt_max}_resp{resp_max}.jsonl")
+    cache_dir = cache_dir or os.path.join("data", "gsm8k")
+    out_path = os.path.join(cache_dir, f"test_mdm_{tok_tag}_{src_tag}_prompt{prompt_max}_resp{resp_max}.jsonl")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     def load_cached():
@@ -145,14 +147,15 @@ def test_gsm8k_tokenization(mask_id: int, tokenizer_name: str = None, data_path:
     return load_cached()
 
 
-def evaluate_ddp_gsm8k(model, cfg, device, rank: int, world_size: int, sampling, logdir=None, metric_name=""):
+def evaluate_ddp_gsm8k(model, cfg, device, rank: int, world_size: int, sampling, step=0, logdir=None, metric_name=""):
     mask_id = cfg.data.mask_id
     tokenizer_name = cfg.data.get("tokenizer_name", None)
     data_path = cfg.data.get("gsm8k_test_path", None)
+    cache_dir = cfg.data.get("gsm8k_cache_dir", None)
     test_ratio = cfg.data.get("test_ratio", 1.0)
 
     # build / load the tokenized test set for this tokenizer
-    X, answers = test_gsm8k_tokenization(mask_id, tokenizer_name=tokenizer_name, data_path=data_path)
+    X, answers = test_gsm8k_tokenization(mask_id, tokenizer_name=tokenizer_name, data_path=data_path, cache_dir=cache_dir)
 
     # optionally use a subset of the test data
     if test_ratio < 1.0:
@@ -190,7 +193,16 @@ def evaluate_ddp_gsm8k(model, cfg, device, rank: int, world_size: int, sampling,
                 samples_tensor = arm_sampling(model, batch_X, mask_id, sampling, device)
             else:
                 arm_init = cfg.model.get("arm_init", "none") != "none"
-                samples_tensor = mdm_sampling(model, batch_X, mask_id, sampling, device, arm_init=arm_init, prompt_mask=prompt_mask)
+                do_track = cfg.validation.track and j == 0
+                result = mdm_sampling(model, batch_X, mask_id, sampling, device, arm_init=arm_init, prompt_mask=prompt_mask, track=do_track)
+                if do_track:
+                    samples_tensor, track_info = result
+                    if logdir is not None:
+                        os.makedirs(logdir, exist_ok=True)
+                        with open(os.path.join(logdir, metric_name + f"step{step}_rank{rank}.pkl"), "wb") as f:
+                            pickle.dump(track_info, f)
+                else:
+                    samples_tensor = result
 
             # decode prompts (tokens before the first mask position)
             batch_X_np = batch_X.cpu().numpy()

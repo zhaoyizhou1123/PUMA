@@ -179,30 +179,41 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
     return global_sum / max(int(global_count), 1)
 
 def parse_k_schedule_increasing(k_schedule) -> List[Tuple[int, int]]:
+    """Parse k_schedule as a list of [K, epoch] pairs with strictly increasing epochs."""
     if k_schedule is None:
         return []
 
     sched = []
-    prev_step = None
+    prev_epoch = None
     for item in list(k_schedule):
         if not isinstance(item, (list, tuple, ListConfig)) or len(item) != 2:
-            raise ValueError(f"k_schedule entries must be [K, step], got {item}")
-        K, step = int(item[0]), int(item[1])
+            raise ValueError(f"k_schedule entries must be [K, epoch], got {item}")
+        K, epoch = int(item[0]), int(item[1])
         if K <= 0:
             raise ValueError(f"Invalid K in k_schedule: {K}")
-        if step < 0:
-            raise ValueError(f"Invalid step in k_schedule: {step}")
+        if epoch < 0:
+            raise ValueError(f"Invalid epoch in k_schedule: {epoch}")
 
-        if prev_step is not None and step <= prev_step:
+        if prev_epoch is not None and epoch <= prev_epoch:
             raise ValueError(
-                f"k_schedule must have strictly increasing steps, but got step {step} after {prev_step}. "
+                f"k_schedule must have strictly increasing epochs, but got epoch {epoch} after {prev_epoch}. "
                 f"Full schedule: {list(k_schedule)}"
             )
 
-        sched.append((K, step))
-        prev_step = step
+        sched.append((K, epoch))
+        prev_epoch = epoch
 
     return sched
+
+
+def compute_total_training_steps(k_schedule, num_epochs, loader_len, grad_accum) -> int:
+    """Compute total optimizer steps accounting for varying K across epochs."""
+    total = 0
+    for i, (K, start_epoch) in enumerate(k_schedule):
+        end_epoch = k_schedule[i + 1][1] if i + 1 < len(k_schedule) else num_epochs
+        epochs_with_k = max(0, end_epoch - start_epoch)
+        total += epochs_with_k * loader_len * K
+    return total // grad_accum
 
 
 @hydra.main(version_base=None, config_path="../yaml_files/maze", config_name="maze")
@@ -329,10 +340,13 @@ def main(cfg: DictConfig):
 
     # optimizer and scheduler
     optimizer = optim.AdamW(model.parameters(), lr=train_cfg.learning_rate, weight_decay=train_cfg.weight_decay)
-    num_training_steps = train_cfg.num_epochs * len(train_loader)
     if train_cfg.strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
-        num_training_steps *= train_cfg.K
-    num_training_steps //= grad_accum_steps
+        _ks = parse_k_schedule_increasing(getattr(train_cfg, "k_schedule", None))
+        if len(_ks) == 0:
+            _ks = [(train_cfg.K, 0)]
+        num_training_steps = compute_total_training_steps(_ks, train_cfg.num_epochs, len(train_loader), grad_accum_steps)
+    else:
+        num_training_steps = train_cfg.num_epochs * len(train_loader) // grad_accum_steps
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=train_cfg.warmup_steps, num_training_steps=num_training_steps)
     if train_cfg.ema is not None:
         assert 0.0 < train_cfg.ema < 1.0, "EMA decay must be between 0 and 1"
@@ -345,6 +359,7 @@ def main(cfg: DictConfig):
     # Resume from checkpoint
     resume_path = cfg.training.get("resume", None)
     resume_global_step = 0
+    resume_epoch = 0
     if resume_path and resume_path != "none":
         if is_main:
             print(f"Resuming from checkpoint: {resume_path}")
@@ -363,8 +378,9 @@ def main(cfg: DictConfig):
             ema.load_state_dict(ckpt["ema_state_dict"])
             ema.move_shadow_params_to_device(device)
         resume_global_step = ckpt.get("global_step", 0)
+        resume_epoch = ckpt.get("epoch", 0)
         if is_main:
-            print(f"Resumed at global_step={resume_global_step}")
+            print(f"Resumed at global_step={resume_global_step}, epoch={resume_epoch}")
 
     strategy = train_cfg.strategy
     # max_position is used by the pool for SMDM; read from cfg or infer from data max_len or smdm_config
@@ -466,26 +482,20 @@ def main(cfg: DictConfig):
         pool = make_pool(current_k)
         next_k_idx = 1
 
-        # fast-forward k_schedule to resume_global_step
-        if resume_global_step > 0:
+        # fast-forward k_schedule to resume epoch
+        if resume_epoch > 0:
             for idx in range(1, len(k_schedule)):
-                if resume_global_step >= k_schedule[idx][1]:
+                if resume_epoch >= k_schedule[idx][1]:
                     current_k = k_schedule[idx][0]
                     next_k_idx = idx + 1
                 else:
                     break
             pool = make_pool(current_k)
             if is_main:
-                print(f"[Resume] Restored K={current_k}, next_k_idx={next_k_idx}")
+                print(f"[Resume] Restored K={current_k} at epoch {resume_epoch}, next_k_idx={next_k_idx}")
 
 
     # training loop
-    steps_per_epoch = len(train_loader)
-    if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
-        steps_per_epoch *= current_k
-    steps_per_epoch //= grad_accum_steps
-    skip_until_epoch = resume_global_step // steps_per_epoch
-    resume_step_in_epoch = resume_global_step % steps_per_epoch
     global_step = resume_global_step
 
     # wandb initialize
@@ -499,10 +509,26 @@ def main(cfg: DictConfig):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
 
-        if epoch < skip_until_epoch:
+        if epoch <= resume_epoch and resume_global_step > 0:
+            if epoch < resume_epoch:
+                continue
+            # epoch == resume_epoch: resume mid-epoch is not supported cleanly, restart from next epoch
             continue
 
-        step_offset = resume_step_in_epoch if epoch == skip_until_epoch else 0
+        # Apply epoch-based K schedule transitions at epoch start
+        if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
+            while next_k_idx < len(k_schedule) and epoch >= k_schedule[next_k_idx][1]:
+                current_k = k_schedule[next_k_idx][0]
+                if is_main:
+                    print(f"[K-SWITCH] Epoch {epoch}: K={current_k}")
+                pool = make_pool(current_k)
+                next_k_idx += 1
+
+        # Compute steps_per_epoch based on current K for this epoch
+        steps_per_epoch = len(train_loader)
+        if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
+            steps_per_epoch *= current_k
+        steps_per_epoch //= grad_accum_steps
 
         if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
             pool.reset_loader_iter()
@@ -518,27 +544,6 @@ def main(cfg: DictConfig):
             pbar = iterable
 
         for step_in_epoch, itr in enumerate(pbar):
-            # skip steps already completed before resume
-            if step_in_epoch < step_offset:
-                if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"]:
-                    for _ in range(grad_accum_steps):
-                        with torch.no_grad():
-                            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-                                xt = pool.current_batch()
-                                logits = model(xt)
-                                log_probs = F.log_softmax(logits, dim=-1)
-                        pool.update_with_logits(log_probs)
-                continue
-            # update current K if using k schedule
-            if strategy in ["progressive", "progressive_edit", "edit_v2", "edit_v3", "edit_v3_2", "edit_v3_3", "edit_v4", "edit_v5", "edit_v6", "edit_v7"] and next_k_idx < len(k_schedule) and global_step == k_schedule[next_k_idx][1]:
-                current_k = k_schedule[next_k_idx][0]
-                if is_main:
-                    print(f"[K-SWITCH] Step {global_step}: K={current_k}")
-
-                pool = make_pool(current_k)
-                pool.reset_loader_iter()
-                next_k_idx += 1
-
             optimizer.zero_grad()
             accum_loss = 0.0
 

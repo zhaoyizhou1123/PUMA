@@ -1,23 +1,16 @@
+import argparse
 import os
 import numpy as np
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-TOKENIZER_NAME = "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"
-INPUT_FILE = "/home/zhaoyiz/projects/SMDM/data/gsm8k/train.txt"
-OUT_DIR = os.path.join(os.path.dirname(__file__), "gsm8k")
-
-Q_MAX_LEN = 128   # left-padded with bos to this length
-A_MAX_LEN = 64    # right-padded with eos to this length
-SEQ_LEN = Q_MAX_LEN + A_MAX_LEN
-
 
 def preprocess_gsm8k(
-    input_file: str = INPUT_FILE,
-    out_dir: str = OUT_DIR,
-    q_max_len: int = Q_MAX_LEN,
-    a_max_len: int = A_MAX_LEN,
-    tokenizer_name: str = TOKENIZER_NAME,
+    input_file: str,
+    out_dir: str,
+    q_max_len: int,
+    a_max_len: int,
+    tokenizer_name: str,
 ):
     os.makedirs(out_dir, exist_ok=True)
 
@@ -87,4 +80,17 @@ def preprocess_gsm8k(
 
 
 if __name__ == "__main__":
-    preprocess_gsm8k()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input_file", required=True)
+    parser.add_argument("--out_dir", default=os.path.join(os.path.dirname(__file__), "gsm8k"))
+    parser.add_argument("--q_max_len", type=int, default=128)
+    parser.add_argument("--a_max_len", type=int, default=64)
+    parser.add_argument("--tokenizer_name", default="TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T")
+    args = parser.parse_args()
+    preprocess_gsm8k(
+        input_file=args.input_file,
+        out_dir=args.out_dir,
+        q_max_len=args.q_max_len,
+        a_max_len=args.a_max_len,
+        tokenizer_name=args.tokenizer_name,
+    )

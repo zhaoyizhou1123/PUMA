@@ -33,7 +33,7 @@ def setup_data_bundle(config: DictConfig) -> DatasetBundle:
         from .maze import split_maze
         train_data, val_data = split_maze(config.data_dir, val_ratio=config.val_ratio, seed=config.seed)
     elif config.dataset == "gsm8k_smdm":
-        train_data, val_data = split_gsm8k_smdm(val_ratio=config.val_ratio, seed=config.seed)
+        train_data, val_data = split_gsm8k_smdm(config.data_dir, val_ratio=config.val_ratio, seed=config.seed)
 
     train_loader = DataLoader(
         train_data,

@@ -6,10 +6,15 @@ training:
   strategy: "standard"
   confidence_threshold: 0.9
   mode: "standard"
-  K: 8
+  K: 1
+  k_schedule:
+    - [1, 0]
+    - [2, 8]
+    - [4, 12]
+    - [8, 14]
   learning_rate: 3e-4
   weight_decay: 0.01
-  num_epochs: 10
+  num_epochs: 15
   max_grad_norm: 1.0
   batch_size: 128
   batch_size_per_gpu: 128
