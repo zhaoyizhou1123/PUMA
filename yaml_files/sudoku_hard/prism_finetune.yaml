@@ -24,13 +24,13 @@ model:
 prism:
   pretrained_ckpt: "none"         # set via CLI: prism.pretrained_ckpt=...
   adapter_hidden: 64              # hidden dim of the two-layer adapter MLP
-  num_demasking_tokens: 16        # k: tokens revealed in one training step
-  reg_lambda: 0.5                 # weight on backbone CE regularisation loss
-  tune_backbone: false            # if true, backbone also receives gradients
+  num_demasking_tokens: 4         # k=4 per paper (finetune_sudoku_prism.sh)
+  reg_lambda: 5.0                 # per paper (finetune_sudoku_prism.sh)
+  tune_backbone: true             # per paper: backbone fine-tuned jointly
   # inference / PRISM-sampling settings
-  num_remask: 1                   # clean tokens to remask per sampling step
-  step_on: 0                      # first step to apply adapter-guided remasking
-  step_off: 999999                # last step to apply it (default: always on)
+  num_remask: 4                   # per paper (sample_sudoku_prism.sh)
+  step_on: 0                      # per paper
+  step_off: 999999                # effectively always on (paper uses step_off=51=all steps)
 
 # ---- training ----
 training:
@@ -39,15 +39,15 @@ training:
   mode: "standard"
   learning_rate: 3e-4
   weight_decay: 0.01
-  num_epochs: 20                  # upper bound; max_steps takes precedence
-  max_steps: 500000
+  num_epochs: 100                 # upper bound; max_steps takes precedence
+  max_steps: 20000                # per paper (finetune_sudoku_prism.sh)
   max_grad_norm: 1.0
-  batch_size: 128
-  lr_scaling_mode: "linear"
+  batch_size: 256                 # per paper
+  lr_scaling_mode: "constant"     # paper uses fixed 3e-4 regardless of batch size
   warmup_steps: 500
   logging_steps: 100
-  eval_steps: 5000
-  save_steps: 10000
+  eval_steps: 1000
+  save_steps: 5000
   ema: null
   eos_id: null
 

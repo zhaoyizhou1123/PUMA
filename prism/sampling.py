@@ -51,7 +51,7 @@ def prism_sampling(
     unmasking_num = sampling_cfg.unmasking_num
     step_on       = getattr(sampling_cfg, "step_on",    0)
     step_off_val  = getattr(sampling_cfg, "step_off",   float('inf'))
-    num_remask    = getattr(sampling_cfg, "num_remask",  1)
+    num_remask    = getattr(sampling_cfg, "num_remask",  0)
 
     if prompt_mask is None:
         prompt_mask = torch.zeros_like(xt, dtype=torch.bool)
@@ -61,7 +61,13 @@ def prism_sampling(
     if track:
         track_list = []
 
-    for step in range(L // unmasking_num + 1):
+    # Net tokens decoded per step = unmasking_num (remasking is compensated by
+    # revealing unmasking_num + num_remask tokens when remasking is active).
+    # Loop bound is based on net progress = unmasking_num per step.
+    n_answer = (~prompt_mask[0]).sum().item()
+    max_steps = math.ceil(n_answer / unmasking_num) + 1
+
+    for step in range(max_steps):
         mask_indices = (xt == mask_id)
         if mask_indices.sum() == 0:
             break
@@ -82,8 +88,14 @@ def prism_sampling(
         else:
             unmask_score = torch.where(mask_indices, p.max(dim=-1).values, float('-inf'))
 
-        # ---- unmask top-k positions ----
-        k_max = min(unmasking_num, int(mask_indices.sum(dim=-1).max().item()))
+        # ---- adapter-guided remasking (PRISM phase) ----
+        # Per Algorithm 3 of the paper: unmask (unmasking_num + num_remask) tokens,
+        # then remask num_remask low-confidence clean tokens.
+        # Net progress = unmasking_num per step regardless of num_remask.
+        remasking_active = (step_on <= step < step_off_val) and num_remask > 0
+
+        n_unmask = unmasking_num + (num_remask if remasking_active else 0)
+        k_max = min(n_unmask, int(mask_indices.sum(dim=-1).max().item()))
         if k_max > 0:
             _, sel = unmask_score.topk(k=k_max, dim=-1)
             valid  = mask_indices.gather(1, sel)
@@ -92,19 +104,17 @@ def prism_sampling(
             new_tok = logits_noisy.argmax(dim=-1)
             xt = torch.where(upd, new_tok, xt)
 
-        # ---- adapter-guided remasking (PRISM phase) ----
-        if step_on <= step < step_off_val and num_remask > 0:
-            clean = (~(xt == mask_id)) & (~prompt_mask)     # decoded response tokens
-            n_clean = clean.sum(dim=-1).max().item()
+        if remasking_active:
+            clean = (~(xt == mask_id)) & (~prompt_mask)
+            n_clean = int(clean.sum(dim=-1).max().item())
             if n_clean > 0:
-                adapter_logits = model.adapter(hidden)       # [B, L]  (no sigmoid yet)
-                # lower adapter confidence → higher remask priority
+                adapter_logits = model.adapter(hidden)       # [B, L]
                 remask_score = torch.where(
                     clean,
                     -adapter_logits,
                     torch.full_like(adapter_logits, float('-inf'))
                 )
-                k_rm = min(num_remask, int(n_clean))
+                k_rm = min(num_remask, n_clean)
                 if k_rm > 0:
                     _, rm_idx = remask_score.topk(k=k_rm, dim=-1)
                     rm_valid  = clean.gather(1, rm_idx)

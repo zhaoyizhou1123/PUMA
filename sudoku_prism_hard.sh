@@ -22,7 +22,7 @@ export WANDB_API_KEY="wandb_v1_MDf3DTuWrorwTWMmGA4FyNKk7eI_AJTLt8gs6hCy2loqpveDh
 # ============================================================
 # SET THIS to the backbone checkpoint from Phase 1 pretraining
 # ============================================================
-PRETRAINED_CKPT="/data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-29-19-46/step145000.pt"
+PRETRAINED_CKPT="/data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-29-19-46/step195000.pt"
 
 echo "=========================================="
 echo "SLURM Job Information"

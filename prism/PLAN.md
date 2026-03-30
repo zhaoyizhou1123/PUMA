@@ -95,11 +95,14 @@ No existing files are modified.
 ## Next Steps (TODO)
 
 - [x] **Smoke test**: all imports, shapes, and training step verified OK
-- [ ] **Debug Phase 1**: `bash sudoku_standard_hard_debug.sh` — 50 steps, no wandb
-- [ ] **Debug Phase 2**: `bash sudoku_prism_hard_debug.sh` — 50 steps, random backbone
-- [ ] **Submit Phase 1**: `sbatch sudoku_standard_hard.sh` — start pretraining so the checkpoint is ready
-- [ ] **Submit Phase 2**: once Phase 1 has a checkpoint, update `PRETRAINED_CKPT` in `sudoku_prism_hard.sh` and submit
-- [ ] **Results comparison**: compare `prism_acc` vs `progressive_edit` solve accuracy curves on wandb
+- [x] **Debug Phase 1**: `sbatch sudoku_standard_hard_debug.sh` — 50 steps ✅
+- [x] **Debug Phase 2**: `sbatch sudoku_prism_hard_debug.sh` — 50 steps, then fix OmegaConf struct errors ✅
+- [x] **Fix sampling bug**: unmask `unmasking_num + num_remask` per step, then remask `num_remask` (net progress = `unmasking_num`)
+- [x] **Align with paper hyperparams**: `num_demasking_tokens=4`, `reg_lambda=5.0`, `tune_backbone=true`, `batch_size=256`, `max_steps=20k`
+- [ ] **Cancel bad PRISM run**: `scancel 6884048` — used old config, `prism_acc=0.0`
+- [ ] **Submit Phase 1**: `sbatch sudoku_standard_hard.sh` — wait for backbone to converge
+- [ ] **Submit Phase 2**: once Phase 1 plateaus, update `PRETRAINED_CKPT` in `sudoku_prism_hard.sh` and resubmit
+- [ ] **Results comparison**: compare `prism_acc` vs `progressive_edit` solve accuracy on wandb
 
 ---
 

@@ -46,7 +46,7 @@ echo "=========================================="
     training.strategy=standard \
     training.eval_steps=1000 \
     training.save_steps=5000 \
-    +training.max_steps=2000000 \
+    +training.max_steps=500000 \
     +training.ckpt_root=/data/user_data/frankwu2/PUMA/checkpoints \
     validation.val_dir=/data/user_data/frankwu2/PUMA/data/sudoku_hard \
     validation.sampling.unmasking_num=[1] \
