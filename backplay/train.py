@@ -1,25 +1,26 @@
 """
-PRISM fine-tuning training script
-===================================
+BackPlay fine-tuning training script
+=====================================
 Usage (single GPU):
-    torchrun --nproc_per_node=1 -m prism.train \\
+    torchrun --nproc_per_node=1 -m backplay.train \\
         --config-path ../yaml_files/sudoku_hard \\
-        --config-name prism_finetune \\
-        prism.pretrained_ckpt=/path/to/step10000.pt
+        --config-name backplay_finetune \\
+        backplay.pretrained_ckpt=/path/to/step10000.pt
 
-The backbone is loaded from prism.pretrained_ckpt and frozen by default.
-Only the AdapterHead is trained.
+The backbone is loaded from backplay.pretrained_ckpt and frozen by default.
+Only the correction head is trained.
 
 Config sections required (beyond the base model/data/validation/wandb fields):
-    prism:
+    backplay:
       pretrained_ckpt: "path/to/backbone.pt"
-      num_demasking_tokens: 16
-      reg_lambda: 0.5
+      delta_t: 0.1                 # minimum look-back distance for LBC
+      reg_lambda: 0.0
       tune_backbone: false
-      adapter_hidden: 64
-      num_remask: 1       # used during PRISM-sampling eval
-      step_on: 0
-      step_off: 999999
+      adapter_layers: 2
+      tau: 0.5                     # correction threshold (inference)
+      remask_budget: 2             # K in Algorithm 1
+      stride: 1                    # correct every d steps (inference)
+      block_size: 10               # Hblock size (inference)
 """
 
 from __future__ import annotations
@@ -51,9 +52,9 @@ from data.sudoku_utils import resolve_sudoku_grid_size
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from model.ema import save_model_snapshot
 from model.transformer import MDMConfig
-from prism.algorithm import prism_training_step
-from prism.model import PrismMDMTransformer
-from prism.sampling import prism_evaluate_ddp_sudoku, prism_sampling
+from backplay.algorithm import backplay_training_step
+from backplay.model import BackPlayMDMTransformer
+from backplay.sampling import backplay_evaluate_ddp_sudoku, backplay_sampling
 from sampling import mdm_sampling
 
 
@@ -114,12 +115,10 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
             B, L = x0.shape
             if pm is None:
                 pm = torch.zeros_like(x0, dtype=torch.bool)
-            L_eff   = (~pm).sum(dim=1, keepdim=True).clamp(min=1).float()
-            num_mask = (torch.rand(B, 1, device=device) * L_eff).long().clamp(min=1)
-            noise   = torch.rand(B, L, device=device).masked_fill(pm, float('inf'))
-            order   = noise.argsort(dim=1)
-            mask_idx = (order < num_mask)
-            x_t     = torch.where(mask_idx, mask_id, x0)
+            mask_prob = torch.rand(B, 1, device=device)
+            rand_mask = torch.rand(B, L, device=device)
+            mask_idx = (rand_mask < mask_prob) & (~pm)
+            x_t = torch.where(mask_idx, mask_id, x0)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
                 logits = model(x_t)
             loss = F.cross_entropy(logits[mask_idx], x0[mask_idx])
@@ -132,10 +131,10 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
     return (tensor[0] / tensor[1].clamp(min=1)).item()
 
 
-def evaluate(model, cfg, device, rank, world_size, sampling_cfg, step, logdir, use_prism=False):
-    """Run sudoku solve-accuracy eval using either standard or PRISM sampling."""
-    if use_prism:
-        return prism_evaluate_ddp_sudoku(model, cfg, device, rank, world_size, sampling_cfg, step=step, logdir=logdir)
+def evaluate(model, cfg, device, rank, world_size, sampling_cfg, step, logdir, use_backplay=False):
+    """Run sudoku solve-accuracy eval using either standard or BackPlay sampling."""
+    if use_backplay:
+        return backplay_evaluate_ddp_sudoku(model, cfg, device, rank, world_size, sampling_cfg, step=step, logdir=logdir)
     else:
         return evaluate_ddp_sudoku(model, cfg, device, rank, world_size, sampling_cfg, step=step, logdir=logdir)
 
@@ -144,13 +143,13 @@ def evaluate(model, cfg, device, rank, world_size, sampling_cfg, step, logdir, u
 # Main
 # ---------------------------------------------------------------------------
 
-@hydra.main(version_base=None, config_path="../yaml_files/sudoku_hard", config_name="prism_finetune")
+@hydra.main(version_base=None, config_path="../yaml_files/sudoku_hard", config_name="backplay_finetune")
 def main(cfg: DictConfig):
     rank, world_size, local_rank = setup_ddp()
     is_main = (rank == 0)
 
     if is_main:
-        print("PRISM fine-tuning — starting")
+        print("BackPlay fine-tuning — starting")
         print(f"World size: {world_size}")
 
     # Resolve grid_size → vocab_size / max_position / mask_id for sudoku
@@ -182,21 +181,21 @@ def main(cfg: DictConfig):
 
     track_dir = None
     if cfg.validation.get("track", False):
-        track_dir = f"track/prism/date={ts}"
+        track_dir = f"track/backplay/date={ts}"
         os.makedirs(track_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # Model: build PrismMDMTransformer, load backbone from checkpoint
+    # Model: build BackPlayMDMTransformer, load backbone from checkpoint
     # ------------------------------------------------------------------
-    model_cfg    = cfg.model
-    prism_cfg    = cfg.prism
-    model_config = MDMConfig(**{k: v for k, v in model_cfg.items()})
+    model_cfg     = cfg.model
+    backplay_cfg  = cfg.backplay
+    model_config  = MDMConfig(**{k: v for k, v in model_cfg.items()})
 
-    adapter_hidden = int(prism_cfg.get("adapter_hidden", 64))
-    model = PrismMDMTransformer(model_config, adapter_hidden=adapter_hidden).to(device)
+    adapter_layers = int(backplay_cfg.get("adapter_layers", 2))
+    model = BackPlayMDMTransformer(model_config, adapter_layers=adapter_layers).to(device)
 
     # Load pretrained backbone weights
-    pretrained_ckpt = prism_cfg.pretrained_ckpt
+    pretrained_ckpt = backplay_cfg.pretrained_ckpt
     if pretrained_ckpt and pretrained_ckpt != "none":
         if is_main:
             print(f"Loading backbone from: {pretrained_ckpt}")
@@ -213,7 +212,7 @@ def main(cfg: DictConfig):
             print("WARNING: no pretrained_ckpt provided — backbone is randomly initialised!")
 
     # Freeze backbone, only train adapter
-    tune_backbone = bool(prism_cfg.get("tune_backbone", False))
+    tune_backbone = bool(backplay_cfg.get("tune_backbone", False))
     for name, param in model.named_parameters():
         if name.startswith("adapter."):
             param.requires_grad = True
@@ -287,10 +286,9 @@ def main(cfg: DictConfig):
     # ------------------------------------------------------------------
     # Training loop
     # ------------------------------------------------------------------
-    prism_num_demask       = int(prism_cfg.num_demasking_tokens)
-    prism_reg_lambda       = float(prism_cfg.reg_lambda)
-    prism_train_unmask     = str(prism_cfg.get("train_unmask_mode", "random"))
-    prism_eval_unmask      = str(prism_cfg.get("eval_unmask_mode",  "random"))
+    bp_delta_t    = float(backplay_cfg.delta_t)
+    bp_reg_lambda = float(backplay_cfg.reg_lambda)
+    bp_error_weight = float(backplay_cfg.get("error_weight", 1.0))
 
     global_step = 0
 
@@ -309,16 +307,16 @@ def main(cfg: DictConfig):
             pm = batch["prompt_mask"].to(device) if "prompt_mask" in batch else \
                  torch.zeros_like(x0, dtype=torch.bool)
 
-            # Unwrap model for direct call inside prism_training_step
+            # Unwrap model for direct call inside backplay_training_step
             raw_model = model.module if isinstance(model, DDP) else model
 
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-                result = prism_training_step(
+                result = backplay_training_step(
                     raw_model, x0, pm, mask_id,
-                    num_demasking_tokens=prism_num_demask,
-                    reg_lambda=prism_reg_lambda,
+                    delta_t=bp_delta_t,
+                    reg_lambda=bp_reg_lambda,
                     tune_backbone=tune_backbone,
-                    unmask_mode=prism_train_unmask,
+                    error_weight=bp_error_weight,
                 )
 
             loss = result["loss"]
@@ -355,24 +353,37 @@ def main(cfg: DictConfig):
 
                 # 2. Standard sampling accuracy (baseline — no adapter)
                 sampling_cfg = deepcopy(cfg.validation.sampling)
-                std_acc = evaluate(model, cfg, device, rank, world_size, sampling_cfg, global_step, track_dir, use_prism=False)
+                std_acc = evaluate(model, cfg, device, rank, world_size, sampling_cfg, global_step, track_dir, use_backplay=False)
 
-                # 3. PRISM sampling accuracy (adapter-guided remasking)
-                prism_sampling_cfg = deepcopy(cfg.validation.sampling)
-                with open_dict(prism_sampling_cfg):
-                    prism_sampling_cfg.num_remask   = int(prism_cfg.get("num_remask",        1))
-                    prism_sampling_cfg.step_on      = int(prism_cfg.get("step_on",           0))
-                    prism_sampling_cfg.step_off     = int(prism_cfg.get("step_off",          999999))
-                    prism_sampling_cfg.unmask_mode  = str(prism_cfg.get("eval_unmask_mode",  "random"))
-                prism_acc = evaluate(model, cfg, device, rank, world_size, prism_sampling_cfg, global_step, track_dir, use_prism=True)
+                # 3. BackPlay sampling accuracy (adapter-guided remasking)
+                bp_sampling_cfg = deepcopy(cfg.validation.sampling)
+                with open_dict(bp_sampling_cfg):
+                    bp_sampling_cfg.tau        = float(backplay_cfg.get("tau",        0.5))
+                    bp_sampling_cfg.remask_budget = int(backplay_cfg.get("remask_budget", 2))
+                    bp_sampling_cfg.stride     = int(backplay_cfg.get("stride",     1))
+                    bp_sampling_cfg.block_size = int(backplay_cfg.get("block_size",  10))
+                bp_eval = evaluate(model, cfg, device, rank, world_size, bp_sampling_cfg, global_step, track_dir, use_backplay=True)
+                bp_acc = bp_eval["acc"]
 
                 if is_main:
-                    print(f"Step {global_step}  val_loss={v_loss:.4f}  std_acc={std_acc:.4f}  prism_acc={prism_acc:.4f}")
+                    print(
+                        f"Step {global_step}  val_loss={v_loss:.4f}  std_acc={std_acc:.4f}  "
+                        f"backplay_acc={bp_acc:.4f}  remask_seq_frac={bp_eval['remask_seq_frac']:.4f}  "
+                        f"avg_remasked={bp_eval['avg_remasked_tokens_per_seq']:.4f}  "
+                        f"avg_err={bp_eval['avg_error_prob']:.4f}  "
+                        f"avg_max_err={bp_eval['avg_max_error_prob_per_correction']:.4f}"
+                    )
                     if cfg.wandb.wandb:
                         wandb.log({
-                            "val/val_loss":  v_loss,
-                            "val/std_acc":   std_acc,
-                            "val/prism_acc": prism_acc,
+                            "val/val_loss":     v_loss,
+                            "val/std_acc":      std_acc,
+                            "val/backplay_acc": bp_acc,
+                            "val/remask_seq_frac": bp_eval["remask_seq_frac"],
+                            "val/avg_remasked_tokens_per_seq": bp_eval["avg_remasked_tokens_per_seq"],
+                            "val/avg_error_prob": bp_eval["avg_error_prob"],
+                            "val/avg_max_error_prob_per_correction": bp_eval["avg_max_error_prob_per_correction"],
+                            "val/avg_backplay_steps_per_batch": bp_eval["avg_steps_per_batch"],
+                            "val/avg_backplay_correction_steps_per_batch": bp_eval["avg_correction_steps_per_batch"],
                         }, step=global_step)
 
                 # ---- Checkpoint ----
@@ -380,7 +391,7 @@ def main(cfg: DictConfig):
                     saved = save_model_snapshot(
                         ckpt_dir, model, cfg, epoch, global_step,
                         val_loss=v_loss,
-                        extra={"std_acc": std_acc, "prism_acc": prism_acc},
+                        extra={"std_acc": std_acc, "backplay_acc": bp_acc},
                         optimizer=optimizer,
                         scheduler=scheduler,
                     )

@@ -9,6 +9,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-gpu=32
 #SBATCH --mem=128GB
+#SBATCH --exclude=babel-l5-16,babel-l5-20,babel-m9-20
 
 # ============================================================================
 # PUMA Training Script - Sudoku Edit (progressive_edit, hard)
@@ -62,7 +63,7 @@ echo "=========================================="
 echo "Training starts at: $(date)"
 echo ""
 
-torchrun --nproc_per_node=1 -m maze.train \
+/data/user_data/frankwu2/PUMA/venv/bin/torchrun --nproc_per_node=1 -m maze.train \
     --config-path ../yaml_files/sudoku_hard \
     --config-name base \
     training.strategy=progressive_edit \
@@ -75,7 +76,8 @@ torchrun --nproc_per_node=1 -m maze.train \
     +validation.sampling.edit_step=[4] \
     validation.track=False \
     data.seed=123 \
-    data.sudoku_type=preprocessed
+    data.sudoku_type=preprocessed \
+    +training.max_steps=500000
 
 TRAIN_EXIT=$?
 

@@ -61,11 +61,12 @@ def evaluate_ddp_dict(model, cfg, device, rank, world_size, step=0, logdir=None)
             if not strategy_uses_edit:
                 # Evaluate with no editing (edit_freq=-1)
                 sampling_no_edit = deepcopy(base_sampling)
-                sampling_no_edit.confidence = confidence
-                sampling_no_edit.unmasking_num = unmasking_num
-                sampling_no_edit.edit_freq = -1
-                if hasattr(base_sampling, "edit_step") and len(list(base_sampling.edit_step)) > 0:
-                    sampling_no_edit.edit_step = list(base_sampling.edit_step)[0]
+                with open_dict(sampling_no_edit):
+                    sampling_no_edit.confidence = confidence
+                    sampling_no_edit.unmasking_num = unmasking_num
+                    sampling_no_edit.edit_freq = -1
+                    if hasattr(base_sampling, "edit_step") and len(list(base_sampling.edit_step)) > 0:
+                        sampling_no_edit.edit_step = list(base_sampling.edit_step)[0]
 
                 metric_name_no_edit = f"{confidence}_unmasking_{unmasking_num}_editfreq_-1"
                 if hasattr(sampling_no_edit, 'edit_step'):

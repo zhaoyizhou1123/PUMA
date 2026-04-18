@@ -1,34 +1,31 @@
 """
-PRISM fine-tuning training script
-===================================
+RemeDi SFT fine-tuning training script
+========================================
 Usage (single GPU):
-    torchrun --nproc_per_node=1 -m prism.train \\
+    torchrun --nproc_per_node=1 -m remedi.train \\
         --config-path ../yaml_files/sudoku_hard \\
-        --config-name prism_finetune \\
-        prism.pretrained_ckpt=/path/to/step10000.pt
-
-The backbone is loaded from prism.pretrained_ckpt and frozen by default.
-Only the AdapterHead is trained.
+        --config-name remedi_finetune \\
+        remedi.pretrained_ckpt=/path/to/step_N.pt
 
 Config sections required (beyond the base model/data/validation/wandb fields):
-    prism:
+    remedi:
       pretrained_ckpt: "path/to/backbone.pt"
-      num_demasking_tokens: 16
-      reg_lambda: 0.5
-      tune_backbone: false
-      adapter_hidden: 64
-      num_remask: 1       # used during PRISM-sampling eval
-      step_on: 0
-      step_off: 999999
+      ups_positions: [1, 3, 5, 7]   # UPS tap layers (0-indexed)
+      incorrect_ratio: 0.1
+      lambda_ups: 0.3
+      tune_backbone: true
+      backprop_warmup_steps: 0      # (non-paper) freeze backprop_linears for first N steps; 0 = disabled
+      # inference settings
+      use_ups: false                 # false = GitHub TPS gather; true = UPS ranking
 """
 
 from __future__ import annotations
+
 import datetime
 import math
 import os
 import random
 import sys
-import time
 
 import hydra
 import numpy as np
@@ -51,10 +48,9 @@ from data.sudoku_utils import resolve_sudoku_grid_size
 from eval.sudoku_eval import evaluate_ddp_sudoku
 from model.ema import save_model_snapshot
 from model.transformer import MDMConfig
-from prism.algorithm import prism_training_step
-from prism.model import PrismMDMTransformer
-from prism.sampling import prism_evaluate_ddp_sudoku, prism_sampling
-from sampling import mdm_sampling
+from remedi.algorithm import remedi_training_step
+from remedi.model import RemeDiMDMTransformer
+from remedi.sampling import remedi_evaluate_ddp_sudoku
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +97,9 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
     local_sum, local_count = 0.0, 0
 
     if world_size > 1 and dist.is_initialized():
-        sampler = DistributedSampler(val_loader.dataset, num_replicas=world_size, rank=rank, shuffle=False)
+        sampler    = DistributedSampler(
+            val_loader.dataset, num_replicas=world_size, rank=rank, shuffle=False
+        )
         val_loader = DataLoader(
             val_loader.dataset, batch_size=val_loader.batch_size or 16,
             sampler=sampler, num_workers=0, pin_memory=False, drop_last=False,
@@ -110,17 +108,17 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Val loss", disable=(rank != 0)):
             x0 = batch["labels"].to(device)
-            pm = batch["prompt_mask"].to(device) if "prompt_mask" in batch else None
-            B, L = x0.shape
-            if pm is None:
-                pm = torch.zeros_like(x0, dtype=torch.bool)
+            pm = (batch["prompt_mask"].to(device) if "prompt_mask" in batch
+                  else torch.zeros_like(x0, dtype=torch.bool))
+            B, L    = x0.shape
             L_eff   = (~pm).sum(dim=1, keepdim=True).clamp(min=1).float()
             num_mask = (torch.rand(B, 1, device=device) * L_eff).long().clamp(min=1)
             noise   = torch.rand(B, L, device=device).masked_fill(pm, float('inf'))
             order   = noise.argsort(dim=1)
-            mask_idx = (order < num_mask)
+            mask_idx = order < num_mask
             x_t     = torch.where(mask_idx, mask_id, x0)
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16,
+                                enabled=torch.cuda.is_available()):
                 logits = model(x_t)
             loss = F.cross_entropy(logits[mask_idx], x0[mask_idx])
             local_sum   += loss.item() * B
@@ -132,105 +130,102 @@ def val_loss_ddp(model, val_loader, mask_id: int, device, rank: int, world_size:
     return (tensor[0] / tensor[1].clamp(min=1)).item()
 
 
-def evaluate(model, cfg, device, rank, world_size, sampling_cfg, step, logdir, use_prism=False):
-    """Run sudoku solve-accuracy eval using either standard or PRISM sampling."""
-    if use_prism:
-        return prism_evaluate_ddp_sudoku(model, cfg, device, rank, world_size, sampling_cfg, step=step, logdir=logdir)
-    else:
-        return evaluate_ddp_sudoku(model, cfg, device, rank, world_size, sampling_cfg, step=step, logdir=logdir)
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-@hydra.main(version_base=None, config_path="../yaml_files/sudoku_hard", config_name="prism_finetune")
+@hydra.main(version_base=None, config_path="../yaml_files/sudoku_hard", config_name="remedi_finetune")
 def main(cfg: DictConfig):
     rank, world_size, local_rank = setup_ddp()
     is_main = (rank == 0)
 
     if is_main:
-        print("PRISM fine-tuning — starting")
+        print("RemeDi SFT fine-tuning — starting")
         print(f"World size: {world_size}")
 
-    # Resolve grid_size → vocab_size / max_position / mask_id for sudoku
     cfg = resolve_sudoku_grid_size(cfg)
 
-    # Per-GPU batch size
     bs = cfg.training.batch_size
     assert bs % world_size == 0, f"batch_size {bs} must be divisible by world_size {world_size}"
     with open_dict(cfg):
         cfg.data.training.per_gpu_batch_size = bs // world_size
 
-    # Reproducibility
     seed = cfg.data.seed + rank
     torch.manual_seed(seed); random.seed(seed); np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
 
-    device = torch.device(f"cuda:{local_rank}") if torch.cuda.is_available() else torch.device("cpu")
+    device = (torch.device(f"cuda:{local_rank}") if torch.cuda.is_available()
+              else torch.device("cpu"))
 
     # ------------------------------------------------------------------
     # Checkpoint directory
     # ------------------------------------------------------------------
-    ts       = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M")
+    ts        = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M")
     ckpt_root = cfg.training.get("ckpt_root", "ckpts")
     ckpt_dir  = f"{ckpt_root}/{cfg.wandb.project}/{cfg.wandb.name}_date{ts}"
     os.makedirs(ckpt_dir, exist_ok=True)
     if is_main:
         print(f"Checkpoints: {ckpt_dir}")
 
-    track_dir = None
-    if cfg.validation.get("track", False):
-        track_dir = f"track/prism/date={ts}"
-        os.makedirs(track_dir, exist_ok=True)
-
     # ------------------------------------------------------------------
-    # Model: build PrismMDMTransformer, load backbone from checkpoint
+    # Model: RemeDiMDMTransformer
     # ------------------------------------------------------------------
     model_cfg    = cfg.model
-    prism_cfg    = cfg.prism
+    remedi_cfg   = cfg.remedi
     model_config = MDMConfig(**{k: v for k, v in model_cfg.items()})
 
-    adapter_hidden = int(prism_cfg.get("adapter_hidden", 64))
-    model = PrismMDMTransformer(model_config, adapter_hidden=adapter_hidden).to(device)
+    ups_positions = tuple(remedi_cfg.get("ups_positions", [1, 3, 5, 7]))
+    model = RemeDiMDMTransformer(model_config, ups_positions=ups_positions).to(device)
 
-    # Load pretrained backbone weights
-    pretrained_ckpt = prism_cfg.pretrained_ckpt
+    # Load pretrained backbone weights (strict=False: UPS keys are new)
+    pretrained_ckpt = remedi_cfg.pretrained_ckpt
     if pretrained_ckpt and pretrained_ckpt != "none":
         if is_main:
             print(f"Loading backbone from: {pretrained_ckpt}")
         ckpt = torch.load(pretrained_ckpt, map_location="cpu")
         sd   = ckpt.get("model_state_dict", ckpt)
-        # Drop adapter keys if present in checkpoint (fresh adapter every run)
-        sd   = {k: v for k, v in sd.items() if not k.startswith("adapter.")}
+        # Drop any UPS keys that might be present in the checkpoint
+        ups_prefixes = ("ups_blocks.", "backprop_linears.", "backprop_norms.",
+                        "ups_final_norm.", "confidence_head.")
+        sd = {k: v for k, v in sd.items()
+              if not any(k.startswith(p) for p in ups_prefixes)}
         missing, unexpected = model.load_state_dict(sd, strict=False)
         if is_main:
-            print(f"  missing keys : {missing}")
-            print(f"  unexpected   : {unexpected}")
+            print(f"  missing keys  : {missing}")
+            print(f"  unexpected    : {unexpected}")
     else:
         if is_main:
-            print("WARNING: no pretrained_ckpt provided — backbone is randomly initialised!")
+            print("WARNING: no pretrained_ckpt — backbone is randomly initialised!")
 
-    # Freeze backbone, only train adapter
-    tune_backbone = bool(prism_cfg.get("tune_backbone", False))
+    # Freeze/unfreeze backbone
+    tune_backbone = bool(remedi_cfg.get("tune_backbone", True))
+    ups_prefixes  = ("ups_blocks.", "backprop_linears.", "backprop_norms.",
+                     "ups_final_norm.", "confidence_head.")
+    # (non-paper) optionally freeze backprop_linears for the first N steps so that
+    # random UPS write-back does not corrupt the pretrained TPS before UPS has learned
+    # anything useful. Set backprop_warmup_steps=0 (default) to disable entirely.
+    backprop_warmup_steps = int(remedi_cfg.get("backprop_warmup_steps", 0))
     for name, param in model.named_parameters():
-        if name.startswith("adapter."):
-            param.requires_grad = True
+        is_ups = any(name.startswith(p) for p in ups_prefixes)
+        if backprop_warmup_steps > 0 and name.startswith("backprop_linears."):
+            param.requires_grad = False   # temporarily frozen; unfrozen at step N
         else:
-            param.requires_grad = tune_backbone
+            param.requires_grad = True if is_ups else tune_backbone
 
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
     if is_main:
-        total  = sum(p.numel() for p in model.parameters())
-        adapt  = sum(p.numel() for p in trainable_params)
-        print(f"Total params: {total/1e6:.2f}M  |  Trainable (adapter): {adapt/1e6:.3f}M")
+        total = sum(p.numel() for p in model.parameters())
+        train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Total params: {total/1e6:.2f}M  |  Trainable: {train/1e6:.3f}M")
+        if backprop_warmup_steps > 0:
+            print(f"backprop_linears frozen for first {backprop_warmup_steps} steps")
 
     # ------------------------------------------------------------------
-    # DDP wrap
+    # DDP
     # ------------------------------------------------------------------
     if world_size > 1 and torch.cuda.is_available():
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, broadcast_buffers=False)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank,
+                    broadcast_buffers=False)
 
     # ------------------------------------------------------------------
     # Data
@@ -241,8 +236,10 @@ def main(cfg: DictConfig):
     mask_id      = cfg.data.mask_id
 
     if world_size > 1 and torch.cuda.is_available():
-        train_sampler = DistributedSampler(train_loader.dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        train_loader  = DataLoader(
+        train_sampler = DistributedSampler(
+            train_loader.dataset, num_replicas=world_size, rank=rank, shuffle=True
+        )
+        train_loader = DataLoader(
             train_loader.dataset,
             batch_size=cfg.data.training.per_gpu_batch_size,
             sampler=train_sampler,
@@ -252,15 +249,31 @@ def main(cfg: DictConfig):
         train_sampler = None
 
     # ------------------------------------------------------------------
-    # Optimiser + scheduler  (adapter params only, or all if tune_backbone)
+    # Optimiser + scheduler
+    # Two separate learning rates per the paper:
+    #   UPS params: remedi.ups_lr   (default 2e-5, or tps_lr×10 if unset)
+    #   TPS params: remedi.tps_lr   (default 2e-6)
     # ------------------------------------------------------------------
-    train_cfg   = cfg.training
-    lr_mode     = getattr(train_cfg, "lr_scaling_mode", "constant")
-    scaled_lr   = compute_scaled_lr(train_cfg.learning_rate, train_cfg.batch_size, lr_mode)
+    train_cfg = cfg.training
+    tps_lr    = float(remedi_cfg.get("tps_lr", train_cfg.learning_rate))
+    ups_lr    = float(remedi_cfg.get("ups_lr", tps_lr * 10.0))
     if is_main:
-        print(f"LR scaling: {lr_mode}  base={train_cfg.learning_rate}  scaled={scaled_lr:.2e}")
+        print(f"LR — TPS: {tps_lr:.2e}  UPS: {ups_lr:.2e}")
 
-    optimizer = optim.AdamW(trainable_params, lr=scaled_lr, weight_decay=train_cfg.weight_decay)
+    ups_pfx_set = set(ups_prefixes)
+    ups_params = [p for n, p in model.named_parameters()
+                  if p.requires_grad and any(n.startswith(px) for px in ups_prefixes)]
+    tps_params = [p for n, p in model.named_parameters()
+                  if p.requires_grad and not any(n.startswith(px) for px in ups_prefixes)]
+
+    optimizer = optim.AdamW(
+        [
+            {"params": ups_params, "lr": ups_lr},
+            {"params": tps_params, "lr": tps_lr},
+        ],
+        weight_decay=train_cfg.weight_decay,
+        betas=(0.9, 0.999),
+    )
 
     num_training_steps = getattr(train_cfg, "max_steps", None)
     if num_training_steps is None:
@@ -268,29 +281,39 @@ def main(cfg: DictConfig):
     max_epochs = max(1, math.ceil(num_training_steps / len(train_loader)))
 
     scheduler = get_cosine_schedule_with_warmup(
-        optimizer, num_warmup_steps=train_cfg.warmup_steps, num_training_steps=num_training_steps
+        optimizer,
+        num_warmup_steps=train_cfg.warmup_steps,
+        num_training_steps=num_training_steps,
     )
 
     if is_main:
         print(f"Training for {num_training_steps} steps (~{max_epochs} epochs)")
 
     # ------------------------------------------------------------------
-    # WandB
+    # WandB (SLURM/NFS: disable background service — avoids ServicePollForTokenError)
     # ------------------------------------------------------------------
-    if cfg.wandb.wandb and is_main:
-        wandb.init(
-            project=cfg.wandb.project,
-            name=cfg.wandb.name,
-            config=OmegaConf.to_container(cfg, resolve=True),
-        )
+    if os.environ.get("SLURM_JOB_ID") and os.environ.get(
+        "WANDB_DISABLE_SERVICE", ""
+    ).lower() not in ("0", "false", "no"):
+        os.environ.setdefault("WANDB_DISABLE_SERVICE", "true")
+
+    use_wandb = bool(cfg.wandb.wandb)
+    if use_wandb and is_main:
+        try:
+            wandb.init(
+                project=cfg.wandb.project,
+                name=cfg.wandb.name,
+                config=OmegaConf.to_container(cfg, resolve=True),
+            )
+        except Exception as e:
+            print(f"Warning: wandb.init failed ({e!r}); continuing without W&B.", flush=True)
+            use_wandb = False
 
     # ------------------------------------------------------------------
     # Training loop
     # ------------------------------------------------------------------
-    prism_num_demask       = int(prism_cfg.num_demasking_tokens)
-    prism_reg_lambda       = float(prism_cfg.reg_lambda)
-    prism_train_unmask     = str(prism_cfg.get("train_unmask_mode", "random"))
-    prism_eval_unmask      = str(prism_cfg.get("eval_unmask_mode",  "random"))
+    remedi_incorrect_ratio = float(remedi_cfg.get("incorrect_ratio", 0.1))
+    remedi_lambda_ups = float(remedi_cfg.get("lambda_ups", 0.3))
 
     global_step = 0
 
@@ -306,45 +329,64 @@ def main(cfg: DictConfig):
                 break
 
             x0 = batch["labels"].to(device)
-            pm = batch["prompt_mask"].to(device) if "prompt_mask" in batch else \
-                 torch.zeros_like(x0, dtype=torch.bool)
+            pm = (batch["prompt_mask"].to(device) if "prompt_mask" in batch
+                  else torch.zeros_like(x0, dtype=torch.bool))
 
-            # Unwrap model for direct call inside prism_training_step
             raw_model = model.module if isinstance(model, DDP) else model
 
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-                result = prism_training_step(
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16,
+                                enabled=torch.cuda.is_available()):
+                result = remedi_training_step(
                     raw_model, x0, pm, mask_id,
-                    num_demasking_tokens=prism_num_demask,
-                    reg_lambda=prism_reg_lambda,
-                    tune_backbone=tune_backbone,
-                    unmask_mode=prism_train_unmask,
+                    vocab_size=model_config.vocab_size,
+                    incorrect_ratio=remedi_incorrect_ratio,
+                    lambda_ups=remedi_lambda_ups,
+                    detach_tps=(backprop_warmup_steps > 0 and global_step < backprop_warmup_steps),
+                    skip_diffusion=(backprop_warmup_steps > 0 and global_step < backprop_warmup_steps),
                 )
 
             loss = result["loss"]
             optimizer.zero_grad()
             loss.backward()
             if train_cfg.max_grad_norm > 0:
-                nn.utils.clip_grad_norm_(trainable_params, train_cfg.max_grad_norm)
+                nn.utils.clip_grad_norm_(
+                    [p for p in model.parameters() if p.requires_grad],
+                    train_cfg.max_grad_norm,
+                )
             optimizer.step()
             scheduler.step()
             global_step += 1
 
+            # (non-paper) unfreeze backprop_linears once UPS has warmed up
+            if backprop_warmup_steps > 0 and global_step == backprop_warmup_steps:
+                new_params = [
+                    p for n, p in raw_model.named_parameters()
+                    if n.startswith("backprop_linears.")
+                ]
+                for p in new_params:
+                    p.requires_grad = True
+                optimizer.add_param_group({"params": new_params, "lr": ups_lr})
+                if is_main:
+                    print(f"Step {global_step}: unfreezing backprop_linears")
+
             if is_main:
-                pbar.set_postfix(loss=f"{loss.item():.4f}", lr=f"{optimizer.param_groups[0]['lr']:.2e}")
+                pbar.set_postfix(
+                    loss=f"{loss.item():.4f}",
+                    lr=f"{optimizer.param_groups[0]['lr']:.2e}",
+                )
 
                 if global_step % train_cfg.logging_steps == 0:
                     log = {
-                        "train/loss":    loss.item(),
-                        "train/loss_sc": result["loss_sc"].item(),
-                        "train/lr":      optimizer.param_groups[0]["lr"],
+                        "train/loss":           loss.item(),
+                        "train/loss_diffusion": result["loss_diffusion"].item(),
+                        "train/loss_ups":       result["loss_ups"].item(),
+                        "train/lr":             optimizer.param_groups[0]["lr"],
                     }
-                    if "loss_reg" in result:
-                        log["train/loss_reg"] = result["loss_reg"].item()
-                    if cfg.wandb.wandb:
+                    if use_wandb:
                         wandb.log(log, step=global_step)
                     else:
-                        print(f"Step {global_step}  " + "  ".join(f"{k}={v:.4f}" for k, v in log.items()))
+                        print(f"Step {global_step}  "
+                              + "  ".join(f"{k}={v:.4f}" for k, v in log.items()))
 
             # ---- Evaluation ----
             if global_step % train_cfg.eval_steps == 0:
@@ -353,26 +395,30 @@ def main(cfg: DictConfig):
                 # 1. Backbone val loss
                 v_loss = val_loss_ddp(model, val_loader, mask_id, device, rank, world_size)
 
-                # 2. Standard sampling accuracy (baseline — no adapter)
-                sampling_cfg = deepcopy(cfg.validation.sampling)
-                std_acc = evaluate(model, cfg, device, rank, world_size, sampling_cfg, global_step, track_dir, use_prism=False)
+                # 2. Standard sampling accuracy (no UPS guidance)
+                std_acc = evaluate_ddp_sudoku(
+                    model, cfg, device, rank, world_size,
+                    deepcopy(cfg.validation.sampling),
+                    step=global_step, logdir=None,
+                )
 
-                # 3. PRISM sampling accuracy (adapter-guided remasking)
-                prism_sampling_cfg = deepcopy(cfg.validation.sampling)
-                with open_dict(prism_sampling_cfg):
-                    prism_sampling_cfg.num_remask   = int(prism_cfg.get("num_remask",        1))
-                    prism_sampling_cfg.step_on      = int(prism_cfg.get("step_on",           0))
-                    prism_sampling_cfg.step_off     = int(prism_cfg.get("step_off",          999999))
-                    prism_sampling_cfg.unmask_mode  = str(prism_cfg.get("eval_unmask_mode",  "random"))
-                prism_acc = evaluate(model, cfg, device, rank, world_size, prism_sampling_cfg, global_step, track_dir, use_prism=True)
+                # 3. RemeDi global top-K sampling accuracy
+                remedi_sampling_cfg = deepcopy(cfg.validation.sampling)
+                with open_dict(remedi_sampling_cfg):
+                    remedi_sampling_cfg.use_ups = bool(remedi_cfg.get("use_ups", False))
+                remedi_acc = remedi_evaluate_ddp_sudoku(
+                    raw_model, cfg, device, rank, world_size,
+                    remedi_sampling_cfg, step=global_step, logdir=None,
+                )
 
                 if is_main:
-                    print(f"Step {global_step}  val_loss={v_loss:.4f}  std_acc={std_acc:.4f}  prism_acc={prism_acc:.4f}")
-                    if cfg.wandb.wandb:
+                    print(f"Step {global_step}  val_loss={v_loss:.4f}"
+                          f"  std_acc={std_acc:.4f}  remedi_acc={remedi_acc:.4f}")
+                    if use_wandb:
                         wandb.log({
-                            "val/val_loss":  v_loss,
-                            "val/std_acc":   std_acc,
-                            "val/prism_acc": prism_acc,
+                            "val/val_loss":   v_loss,
+                            "val/std_acc":    std_acc,
+                            "val/remedi_acc": remedi_acc,
                         }, step=global_step)
 
                 # ---- Checkpoint ----
@@ -380,7 +426,7 @@ def main(cfg: DictConfig):
                     saved = save_model_snapshot(
                         ckpt_dir, model, cfg, epoch, global_step,
                         val_loss=v_loss,
-                        extra={"std_acc": std_acc, "prism_acc": prism_acc},
+                        extra={"std_acc": std_acc, "remedi_acc": remedi_acc},
                         optimizer=optimizer,
                         scheduler=scheduler,
                     )
@@ -392,7 +438,7 @@ def main(cfg: DictConfig):
         if global_step >= num_training_steps:
             break
 
-    if cfg.wandb.wandb and is_main:
+    if use_wandb and is_main:
         wandb.finish()
     if world_size > 1 and dist.is_initialized():
         dist.destroy_process_group()

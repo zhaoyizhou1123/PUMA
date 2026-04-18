@@ -49,9 +49,10 @@ def prism_sampling(
     temperature   = sampling_cfg.temperature
     confidence    = sampling_cfg.confidence
     unmasking_num = sampling_cfg.unmasking_num
-    step_on       = getattr(sampling_cfg, "step_on",    0)
-    step_off_val  = getattr(sampling_cfg, "step_off",   float('inf'))
-    num_remask    = getattr(sampling_cfg, "num_remask",  0)
+    step_on       = getattr(sampling_cfg, "step_on",      0)
+    step_off_val  = getattr(sampling_cfg, "step_off",     float('inf'))
+    num_remask    = getattr(sampling_cfg, "num_remask",   0)
+    unmask_mode   = getattr(sampling_cfg, "unmask_mode",  "random")
 
     if prompt_mask is None:
         prompt_mask = torch.zeros_like(xt, dtype=torch.bool)
@@ -72,21 +73,23 @@ def prism_sampling(
         if mask_indices.sum() == 0:
             break
 
-        # ---- backbone + adapter forward ----
+        # ---- backbone forward on current state xt ----
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-            logits, hidden = model.forward_with_hidden(xt)     # [B,L,V], [B,L,H]
+            logits, _ = model.forward_with_hidden(xt)          # [B,L,V]
 
         logits_noisy = gumbel_softmax(logits, temperature=temperature)
         p = F.softmax(logits, dim=-1)
 
-        # ---- confidence score for choosing which masks to open ----
-        if confidence == "top_k":
-            unmask_score = torch.where(mask_indices, p.max(dim=-1).values, float('-inf'))
-        elif confidence == "top_k_margin":
-            top2 = p.topk(k=2, dim=-1).values
-            unmask_score = torch.where(mask_indices, top2[..., 0] - top2[..., 1], float('-inf'))
-        else:
-            unmask_score = torch.where(mask_indices, p.max(dim=-1).values, float('-inf'))
+        # ---- unmasking order (random or top_k confidence) ----
+        if unmask_mode == "top_k":
+            unmask_score = torch.where(mask_indices, p.max(dim=-1).values,
+                                       torch.full((B, L), float('-inf'), device=xt.device))
+        else:  # random
+            unmask_score = torch.where(
+                mask_indices,
+                torch.rand(B, L, device=xt.device),
+                torch.full((B, L), float('-inf'), device=xt.device),
+            )
 
         # ---- adapter-guided remasking (PRISM phase) ----
         # Per Algorithm 3 of the paper: unmask (unmasking_num + num_remask) tokens,
@@ -121,7 +124,11 @@ def prism_sampling(
 
         if remasking_active and per_seq_n_remask.sum() > 0:
             clean        = (~(xt == mask_id)) & (~prompt_mask)
-            adapter_logits = model.adapter(hidden)                         # [B, L]
+            # PRISM scores the post-unmask sequence, so recompute hidden states
+            # after the newly selected tokens have been filled in.
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
+                _, hidden_post = model.forward_with_hidden(xt)             # [B,L,H]
+            adapter_logits = model.adapter(hidden_post)                    # [B, L]
             remask_score = torch.where(clean, -adapter_logits,
                 torch.full_like(adapter_logits, float('-inf')))
             k_rm = int(per_seq_n_remask.max().item())

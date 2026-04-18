@@ -1,0 +1,81 @@
+# ============================================================
+# BackPlay fine-tuning config — sudoku_hard (n=3)
+#
+# Usage:
+#   torchrun --nproc_per_node=1 -m backplay.train \
+#       --config-path ../yaml_files/sudoku_hard \
+#       --config-name backplay_finetune \
+#       backplay.pretrained_ckpt=/path/to/step_N.pt
+# ============================================================
+
+# ---- backbone (identical to base.yaml) ----
+model:
+  vocab_size: 11
+  hidden_size: 256
+  intermediate_size: 768
+  num_layers: 8
+  num_attention_heads: 8
+  num_kv_heads: 8
+  max_position: 162
+  rms_norm_eps: 1e-6
+  dropout: 0.0
+
+# ---- BackPlay-specific adapter + algorithm settings ----
+backplay:
+  pretrained_ckpt: "none"         # set via CLI: backplay.pretrained_ckpt=...
+  adapter_layers: 2               # shallow transformer correction head
+  delta_t: 0.03125                   # 1/32, minimum look-back distance for LBC
+  reg_lambda: 0.0                 # optional non-paper CE regularisation
+  error_weight: 1.0               # >1 up-weights label=0 (error) class; 1.0 = paper BCE
+  tune_backbone: false            # decoupled: freeze backbone (paper default)
+  # inference / BackPlay-sampling settings
+  tau: 0.75                        # error probability threshold for remasking
+  remask_budget: 2                 # K in Algorithm 1
+  stride: 4                        # correct every d steps
+  block_size: 4                    # Hblock size for anti-repetitive policy
+
+# ---- training ----
+training:
+  strategy: "standard"            # used only for logging; actual loss is BackPlay LBC
+  confidence_threshold: 0.9
+  mode: "standard"
+  learning_rate: 3e-4
+  weight_decay: 0.01
+  num_epochs: 100                 # upper bound; max_steps takes precedence
+  max_steps: 20000
+  max_grad_norm: 1.0
+  batch_size: 256
+  lr_scaling_mode: "constant"
+  warmup_steps: 500
+  logging_steps: 100
+  eval_steps: 1000
+  save_steps: 5000
+  ema: null
+  eos_id: null
+
+validation:
+  batch_size: 1024
+  val_dir: "data/sudoku_hard"
+  ratio: 1
+  sampling:
+    temperature: 0.0
+    confidence: "top_k"
+    unmasking_num: 1
+  track: false
+
+data:
+  mask_id: 10
+  dataset: "sudoku"
+  data_dir: ${validation.val_dir}
+  sudoku_type: "preprocessed"
+  val_ratio: 0.001
+  seed: 123
+  mmap: false
+  training:
+    cpus: 4
+
+wandb:
+  wandb: true
+  project: "sudoku_hard-pretraining-corrected"
+  name: "backplay-finetune-s${data.seed}"
+  entity: "your-entity-here"

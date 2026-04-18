@@ -1,0 +1,55 @@
+model:
+  vocab_size: 11
+  hidden_size: 256
+  intermediate_size: 768
+  num_layers: 8
+  num_attention_heads: 8
+  num_kv_heads: 8
+  max_position: 162
+  rms_norm_eps: 1.0e-06
+  dropout: 0.0
+training:
+  strategy: progressive
+  confidence_threshold: 0.9
+  mode: standard
+  K: 8
+  data_ratio: 1.0
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  num_epochs: 8
+  max_grad_norm: 1.0
+  batch_size: 128
+  lr_scaling_mode: linear
+  warmup_steps: 500
+  logging_steps: 100
+  eval_steps: 1000
+  save_steps: 10000
+  ema: null
+  eos_id: null
+validation:
+  batch_size: 1024
+  val_dir: /data/user_data/frankwu2/PUMA/data/sudoku_hard
+  ratio: 1
+  sampling:
+    temperature: 0.0
+    confidence:
+    - top_k
+    unmasking_num:
+    - 1
+  track: false
+  ckpt_path: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+data:
+  mask_id: 10
+  dataset: sudoku
+  data_dir: ${validation.val_dir}
+  sudoku_type: new
+  val_ratio: 0.001
+  seed: 123
+  mmap: false
+  training:
+    cpus: 4
+wandb:
+  wandb: true
+  project: sudoku_hard-pretraining-corrected
+  name: ${training.strategy}-s${data.seed}
+  entity: your-entity-here

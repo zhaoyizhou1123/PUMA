@@ -1,0 +1,3 @@
+- +validation.ckpt_path=/data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+- validation.track=false
+- validation.val_dir=/data/user_data/frankwu2/PUMA/data/sudoku_hard

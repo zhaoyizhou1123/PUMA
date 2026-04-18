@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=puma_sudoku_prism_hard
+#SBATCH --job-name=puma_sudoku_backplay_hard
 #SBATCH --partition=general
-#SBATCH --output=logs/train_sudoku_prism_hard_%j.log
-#SBATCH --error=logs/train_sudoku_prism_hard_%j.err
+#SBATCH --output=logs/train_sudoku_backplay_hard_%j.log
+#SBATCH --error=logs/train_sudoku_backplay_hard_%j.err
 #SBATCH --time=48:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
@@ -12,7 +12,7 @@
 #SBATCH --exclude=babel-l5-16,babel-l5-20,babel-m9-20
 
 # ============================================================================
-# PRISM fine-tuning on sudoku_hard — Phase 2
+# BackPlay fine-tuning on sudoku_hard
 #
 # Prerequisite: run sudoku_standard_hard.sh first to get a pretrained backbone.
 # Set PRETRAINED_CKPT below to the desired checkpoint from that run.
@@ -44,17 +44,17 @@ echo "CUDA:    $(python -c 'import torch; print(torch.cuda.is_available())')"
 echo ""
 
 echo "=========================================="
-echo "Starting PRISM Fine-tuning (hard)"
+echo "Starting BackPlay Fine-tuning (hard)"
 echo "=========================================="
 
-/data/user_data/frankwu2/PUMA/venv/bin/torchrun --nproc_per_node=1 -m prism.train \
+/data/user_data/frankwu2/PUMA/venv/bin/torchrun --nproc_per_node=1 -m backplay.train \
     --config-path ../yaml_files/sudoku_hard \
-    --config-name prism_finetune \
-    prism.pretrained_ckpt="${PRETRAINED_CKPT}" \
+    --config-name backplay_finetune \
+    backplay.pretrained_ckpt="${PRETRAINED_CKPT}" \
+    backplay.tau=0.55   \
     training.eval_steps=1000 \
     training.save_steps=5000 \
-    training.max_steps=50000  \
-    training.learning_rate=1e-4 \
+    training.max_steps=50000    \
     +training.ckpt_root=/data/user_data/frankwu2/PUMA/checkpoints \
     validation.val_dir=/data/user_data/frankwu2/PUMA/data/sudoku_hard \
     data.seed=123 \

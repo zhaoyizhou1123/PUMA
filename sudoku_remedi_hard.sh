@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=puma_sudoku_prism_hard
+#SBATCH --job-name=puma_sudoku_remedi_hard
 #SBATCH --partition=general
-#SBATCH --output=logs/train_sudoku_prism_hard_%j.log
-#SBATCH --error=logs/train_sudoku_prism_hard_%j.err
+#SBATCH --output=logs/train_sudoku_remedi_hard_%j.log
+#SBATCH --error=logs/train_sudoku_remedi_hard_%j.err
 #SBATCH --time=48:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
@@ -12,7 +12,11 @@
 #SBATCH --exclude=babel-l5-16,babel-l5-20,babel-m9-20
 
 # ============================================================================
-# PRISM fine-tuning on sudoku_hard — Phase 2
+# RemeDi SFT fine-tuning on sudoku_hard — Phase 2
+#
+# Reference: arXiv:2509.23653
+#   "Don't Settle Too Early: Self-Reflective Remasking for
+#    Diffusion Language Models"
 #
 # Prerequisite: run sudoku_standard_hard.sh first to get a pretrained backbone.
 # Set PRETRAINED_CKPT below to the desired checkpoint from that run.
@@ -44,17 +48,16 @@ echo "CUDA:    $(python -c 'import torch; print(torch.cuda.is_available())')"
 echo ""
 
 echo "=========================================="
-echo "Starting PRISM Fine-tuning (hard)"
+echo "Starting RemeDi SFT Fine-tuning (hard)"
 echo "=========================================="
 
-/data/user_data/frankwu2/PUMA/venv/bin/torchrun --nproc_per_node=1 -m prism.train \
+/data/user_data/frankwu2/PUMA/venv/bin/torchrun --nproc_per_node=1 -m remedi.train \
     --config-path ../yaml_files/sudoku_hard \
-    --config-name prism_finetune \
-    prism.pretrained_ckpt="${PRETRAINED_CKPT}" \
+    --config-name remedi_finetune \
+    remedi.pretrained_ckpt="${PRETRAINED_CKPT}" \
     training.eval_steps=1000 \
     training.save_steps=5000 \
-    training.max_steps=50000  \
-    training.learning_rate=1e-4 \
+    training.max_steps=50000 \
     +training.ckpt_root=/data/user_data/frankwu2/PUMA/checkpoints \
     validation.val_dir=/data/user_data/frankwu2/PUMA/data/sudoku_hard \
     data.seed=123 \

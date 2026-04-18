@@ -1,0 +1,69 @@
+# ============================================================
+# ReMDM evaluation config — sudoku_hard (n=3)
+#
+# Reference: arXiv:2503.00307v4
+#   "Remasking Discrete Diffusion Models"  (Kuleshov group)
+#
+# ReMDM is a purely inference-time method; no training is needed.
+# Evaluation sweeps over all (variant, eta) combinations.
+#
+# freeze_unmasked: align with PUMA mdm_sampling (frozen digits once placed).
+# Set false only for strict OpenWebText-style ReMDM (resamples all positions).
+#
+# Usage:
+#   torchrun --nproc_per_node=1 -m remdm.eval \
+#       --cfg yaml_files/sudoku_hard/remdm_eval.yaml \
+#       --ckpt /path/to/step_N.pt
+# ============================================================
+
+# ---- backbone (identical to other sudoku_hard configs) ----
+model:
+  vocab_size: 11
+  hidden_size: 256
+  intermediate_size: 768
+  num_layers: 8
+  num_attention_heads: 8
+  num_kv_heads: 8
+  max_position: 162
+  rms_norm_eps: 1.0e-6
+  dropout: 0.0
+
+# ---- ReMDM sweep settings ----
+remdm:
+  # Variants to evaluate:
+  #   cap     — sigma = min(eta, (1 - alpha_s) / alpha_t)
+  #   rescale — sigma = eta * min(1, (1 - alpha_s) / alpha_t)
+  #   conf    — upstream-style confidence weighting over decoded tokens;
+  #             does not use the eta sweep below
+  variants: ["cap", "rescale", "conf"]
+
+  # Remasking intensity values to sweep for cap/rescale.
+  # eta=0 is not identical to PUMA MDLM unless freeze_unmasked is true; even
+  # then the masked-site posterior differs slightly from mdm_sampling.
+  etas: [0.0, 0.05, 0.1, 0.2, 0.5]
+
+# ---- validation ----
+validation:
+  batch_size: 1024
+  val_dir: "/data/user_data/frankwu2/PUMA/data/sudoku_hard"
+  ratio: 1
+  sampling:
+    temperature: 0.0
+    unmasking_num: 1
+    num_steps: 200
+    # Match kuleshov-group/remdm diffusion._sample + _ddpm_caching_update
+    time_grid: mdlm
+    time_eps: 1.0e-5
+    nucleus_p: 1.0
+    freeze_unmasked: false
+    # Used only when time_grid: uniform (legacy)
+    alpha_schedule: "loglinear"
+    alpha_eps: 1.0e-3
+    conf_base_variant: "repo"
+  track: false
+
+# ---- data (used only for mask_id and seed) ----
+data:
+  mask_id: 10
+  dataset: "sudoku"
+  seed: 123
