@@ -1,0 +1,51 @@
+# ============================================================
+# ReMDM NFE sweep config — sudoku_hard (n=3)
+#
+# Runs the best-performing variant (rescale, eta=0.2) across
+# num_steps matched to gibbs_edit NFEs: 81*(k+1) for k in
+# {0, 25, 50, 75, 100, 125, 150, 175, 200}.
+# num_steps is overridden per-run via CLI in the sweep script.
+# ============================================================
+
+# ---- backbone (identical to other sudoku_hard configs) ----
+model:
+  vocab_size: 11
+  hidden_size: 256
+  intermediate_size: 768
+  num_layers: 8
+  num_attention_heads: 8
+  num_kv_heads: 8
+  max_position: 162
+  rms_norm_eps: 1.0e-6
+  dropout: 0.0
+
+# ---- ReMDM: best variant only ----
+remdm:
+  variants: ["rescale"]
+  etas: [0.2]
+
+# ---- validation ----
+validation:
+  batch_size: 1024
+  val_dir: "/data/user_data/frankwu2/PUMA/data/sudoku_hard"
+  ratio: 1
+  sampling:
+    temperature: 0.0
+    unmasking_num: 1
+    num_steps: 200
+    # Match kuleshov-group/remdm diffusion._sample + _ddpm_caching_update
+    time_grid: mdlm
+    time_eps: 1.0e-5
+    nucleus_p: 1.0
+    freeze_unmasked: false
+    # Used only when time_grid: uniform (legacy)
+    alpha_schedule: "loglinear"
+    alpha_eps: 1.0e-3
+    conf_base_variant: "repo"
+  track: false
+
+# ---- data (used only for mask_id and seed) ----
+data:
+  mask_id: 10
+  dataset: "sudoku"
+  seed: 123

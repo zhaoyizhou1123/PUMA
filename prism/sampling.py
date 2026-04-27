@@ -1,14 +1,17 @@
 """
 PRISM inference
 ===============
-Two-phase sampling that combines standard MDM decoding with
-adapter-guided remasking of low-confidence already-decoded tokens.
+Matches the official implementation (PRISM_llada/sampling.py):
 
-Phase 1 (all steps):  standard top-k confidence unmasking (identical to mdm_sampling)
-Phase 2 (steps in [step_on, step_off)): after each unmask, the adapter
-    scores every already-decoded non-prompt token and remasks the
-    num_remask lowest-confidence ones, giving the model a chance to
-    correct them in subsequent steps.
+Per step:
+  1. Single forward pass on current x → logits + hidden states
+  2. Remask: score clean non-prompt tokens with -adapter_conf from this forward;
+     select num_remask lowest-confidence tokens and mask them back;
+     increase unmask budget by the number actually remasked
+  3. Unmask: from the now-larger masked pool, select top unmasking_num tokens
+     using random scores (official default)
+
+NFE = 1 per step.
 """
 
 from __future__ import annotations
@@ -36,23 +39,20 @@ def prism_sampling(
     Parameters in sampling_cfg
     --------------------------
     temperature   : float  – Gumbel-softmax temperature (0 = argmax)
-    confidence    : str    – scoring strategy ("top_k" | "top_k_margin")
-    unmasking_num : int    – tokens to unmask per step
+    unmasking_num : int    – net tokens to unmask per step
     step_on       : int    – first step at which to apply remasking  (default 0)
     step_off      : int    – step at which to stop remasking  (default ∞)
-    num_remask    : int    – clean tokens to remask per step  (default 1)
+    num_remask    : int    – clean tokens to remask per step  (default 0)
 
     Returns
     -------
     xt  [B, L] fully decoded sequence, or (xt, track_xt) if track=True.
     """
     temperature   = sampling_cfg.temperature
-    confidence    = sampling_cfg.confidence
     unmasking_num = sampling_cfg.unmasking_num
-    step_on       = getattr(sampling_cfg, "step_on",      0)
-    step_off_val  = getattr(sampling_cfg, "step_off",     float('inf'))
-    num_remask    = getattr(sampling_cfg, "num_remask",   0)
-    unmask_mode   = getattr(sampling_cfg, "unmask_mode",  "random")
+    step_on       = getattr(sampling_cfg, "step_on",    0)
+    step_off_val  = getattr(sampling_cfg, "step_off",   float('inf'))
+    num_remask    = getattr(sampling_cfg, "num_remask",  0)
 
     if prompt_mask is None:
         prompt_mask = torch.zeros_like(xt, dtype=torch.bool)
@@ -62,10 +62,7 @@ def prism_sampling(
     if track:
         track_list = []
 
-    # Net tokens decoded per step = unmasking_num (remasking is compensated by
-    # revealing unmasking_num + num_remask tokens when remasking is active).
-    # Loop bound is based on net progress = unmasking_num per step.
-    n_answer = (~prompt_mask[0]).sum().item()
+    n_answer  = (~prompt_mask[0]).sum().item()
     max_steps = math.ceil(n_answer / unmasking_num) + 1
 
     for step in range(max_steps):
@@ -73,73 +70,56 @@ def prism_sampling(
         if mask_indices.sum() == 0:
             break
 
-        # ---- backbone forward on current state xt ----
+        # ---- single forward pass ----
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-            logits, _ = model.forward_with_hidden(xt)          # [B,L,V]
+            logits, hidden = model.forward_with_hidden(xt)     # [B,L,V], [B,L,H]
 
-        logits_noisy = gumbel_softmax(logits, temperature=temperature)
-        p = F.softmax(logits, dim=-1)
-
-        # ---- unmasking order (random or top_k confidence) ----
-        if unmask_mode == "top_k":
-            unmask_score = torch.where(mask_indices, p.max(dim=-1).values,
-                                       torch.full((B, L), float('-inf'), device=xt.device))
-        else:  # random
-            unmask_score = torch.where(
-                mask_indices,
-                torch.rand(B, L, device=xt.device),
-                torch.full((B, L), float('-inf'), device=xt.device),
-            )
-
-        # ---- adapter-guided remasking (PRISM phase) ----
-        # Per Algorithm 3 of the paper: unmask (unmasking_num + num_remask) tokens,
-        # then remask num_remask low-confidence clean tokens.
-        # Net progress = unmasking_num per step regardless of num_remask.
-        #
-        # Edge case: when fewer masks remain than (unmasking_num + num_remask),
-        # unmask all remaining and skip remasking — otherwise we deadlock
-        # (unmask N == remask N → zero net progress forever).
         remasking_active = (step_on <= step < step_off_val) and num_remask > 0
 
-        per_seq_masked   = mask_indices.sum(dim=-1)                        # [B]
-        n_unmask_target  = unmasking_num + (num_remask if remasking_active else 0)
-        enough           = per_seq_masked >= n_unmask_target               # [B]
-        per_seq_n_unmask = torch.where(enough,
-            torch.full_like(per_seq_masked, n_unmask_target),
-            per_seq_masked)                                                # [B]
-        per_seq_n_remask = torch.where(enough,
-            torch.full_like(per_seq_masked, num_remask if remasking_active else 0),
-            torch.zeros_like(per_seq_masked))                             # [B]
+        # ---- remasking: score clean tokens with adapter, mask back num_remask lowest ----
+        # Increases unmask budget by however many tokens were actually remasked,
+        # so net progress = unmasking_num per step (matches official sampling.py:184).
+        per_seq_n_remasked = torch.zeros(B, dtype=torch.long, device=xt.device)
+        if remasking_active:
+            clean = (~mask_indices) & (~prompt_mask)            # [B, L]
+            adapter_logits = model.adapter(hidden)              # [B, L]
+            remask_score = torch.where(clean, -adapter_logits, torch.full((B, L), float('-inf'), device=xt.device))
+            for j in range(B):
+                n_clean = clean[j].sum().item()
+                k = min(num_remask, int(n_clean))
+                if k > 0:
+                    _, idx = remask_score[j].topk(k)
+                    xt[j].index_fill_(0, idx, mask_id)
+                    per_seq_n_remasked[j] = k
 
-        k_max = int(per_seq_n_unmask.max().item())
+        if track:
+            track_list.append(xt.clone().detach().cpu())
+
+        # ---- unmasking: random scores on masked positions (official default) ----
+        mask_indices = (xt == mask_id)                          # recompute after remasking
+        logits_noisy = gumbel_softmax(logits, temperature=temperature)
+        new_tok      = logits_noisy.argmax(dim=-1)              # [B, L]
+
+        unmask_score = torch.where(
+            mask_indices,
+            torch.rand(B, L, device=xt.device),
+            torch.full((B, L), float('-inf'), device=xt.device),
+        )
+
+        # budget = unmasking_num + however many were just remasked (per official line 184)
+        per_seq_budget = torch.full((B,), unmasking_num, dtype=torch.long, device=xt.device)
+        per_seq_budget = per_seq_budget + per_seq_n_remasked
+        per_seq_budget = torch.minimum(per_seq_budget, mask_indices.sum(dim=-1))
+
+        k_max = int(per_seq_budget.max().item())
         if k_max > 0:
-            _, sel  = unmask_score.topk(k=k_max, dim=-1)                  # [B, k_max]
+            _, sel  = unmask_score.topk(k=k_max, dim=-1)
             valid   = mask_indices.gather(1, sel)
             k_range = torch.arange(k_max, device=xt.device).unsqueeze(0)
-            in_bud  = k_range < per_seq_n_unmask.unsqueeze(1)
+            in_bud  = k_range < per_seq_budget.unsqueeze(1)
             upd     = torch.zeros_like(mask_indices)
             upd.scatter_(1, sel, valid & in_bud)
-            new_tok = logits_noisy.argmax(dim=-1)
             xt      = torch.where(upd, new_tok, xt)
-
-        if remasking_active and per_seq_n_remask.sum() > 0:
-            clean        = (~(xt == mask_id)) & (~prompt_mask)
-            # PRISM scores the post-unmask sequence, so recompute hidden states
-            # after the newly selected tokens have been filled in.
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-                _, hidden_post = model.forward_with_hidden(xt)             # [B,L,H]
-            adapter_logits = model.adapter(hidden_post)                    # [B, L]
-            remask_score = torch.where(clean, -adapter_logits,
-                torch.full_like(adapter_logits, float('-inf')))
-            k_rm = int(per_seq_n_remask.max().item())
-            if k_rm > 0:
-                _, rm_idx  = remask_score.topk(k=k_rm, dim=-1)
-                rm_valid   = clean.gather(1, rm_idx)
-                k_range_rm = torch.arange(k_rm, device=xt.device).unsqueeze(0)
-                in_bud_rm  = k_range_rm < per_seq_n_remask.unsqueeze(1)
-                rm_mask    = torch.zeros_like(clean)
-                rm_mask.scatter_(1, rm_idx, rm_valid & in_bud_rm)
-                xt = torch.where(rm_mask, torch.full_like(xt, mask_id), xt)
 
         if track:
             track_list.append(xt.clone().detach().cpu())

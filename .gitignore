@@ -11,3 +11,4 @@ outputs
 venv/*
 logs/*
 slurm/
+plot/

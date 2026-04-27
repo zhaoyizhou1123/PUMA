@@ -46,12 +46,16 @@ def parse_args():
                         help="Path to YAML config")
     parser.add_argument("--ckpt", type=str, required=True,
                         help="Path to pretrained MDM checkpoint (.pt)")
+    parser.add_argument("overrides", nargs="*",
+                        help="OmegaConf dot-list overrides, e.g. validation.sampling.num_steps=500")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     cfg  = OmegaConf.load(args.cfg)
+    if args.overrides:
+        cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(args.overrides))
 
     rank, world_size, local_rank = setup_ddp()
     is_main = (rank == 0)
