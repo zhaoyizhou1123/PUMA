@@ -43,7 +43,7 @@ echo "CUDA:    $(/data/user_data/frankwu2/PUMA/venv/bin/python -c 'import torch;
 echo ""
 
 # gibbs_edit NFEs: 81*(k+1) for edit_step k in {0, 25, 50, 75, 100, 125, 150, 175, 200}
-NUM_STEPS_LIST=(81 2106 4131 6156 8181 10206 12231 14256 16281)
+NUM_STEPS_LIST=(81 162 243 405 729 1377 2673 5265 10449 20817)
 
 echo "=========================================="
 echo "Starting ReMDM NFE Sweep (hard)"
