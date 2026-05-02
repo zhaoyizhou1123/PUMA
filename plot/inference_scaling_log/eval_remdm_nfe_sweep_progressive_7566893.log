@@ -1,0 +1,98 @@
+==========================================
+SLURM Job Information
+==========================================
+Job ID: 7566893
+Node:   babel-w9-20
+Start:  Tue Apr 28 23:33:03 EDT 2026
+Backbone ckpt: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+
+Python:  Python 3.9.21
+PyTorch: 2.5.1+cu121
+CUDA:    True
+
+==========================================
+Starting ReMDM NFE Sweep (hard, progressive)
+==========================================
+
+--- num_steps=81 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.0950
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.0950
+
+--- num_steps=162 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1150
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1150
+
+--- num_steps=243 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1260
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1260
+
+--- num_steps=405 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1600
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1600
+
+--- num_steps=729 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1900
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1900
+
+--- num_steps=1377 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.2150
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.2150
+
+--- num_steps=2673 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.2380
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.2380
+
+--- num_steps=5265 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.3070
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.3070
+
+--- num_steps=10449 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.3700
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.3700
+
+--- num_steps=20817 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.4190
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.4190
+
+End: Wed Apr 29 01:16:12 EDT 2026
+All num_steps complete.

@@ -1,0 +1,8 @@
+progressive_edit: /home/frankwu2/PUMA/logs/train_sudoku_edit_hard_6887018.log, 
+proseco: /home/frankwu2/PUMA/logs/proseco.log, 
+puma: /home/frankwu2/PUMA/logs/puma.log, 
+standard: /home/frankwu2/PUMA/logs/train_sudoku_standard_hard_6893656.log, 
+remedi: /home/frankwu2/PUMA/logs/train_sudoku_remedi_hard_7010114.log, 
+remdm: /home/frankwu2/PUMA/logs/eval_remdm_nfe_sweep_7247217.log, 
+backplay: /home/frankwu2/PUMA/logs/train_sudoku_backplay_hard_7008718.log, 
+prism: /home/frankwu2/PUMA/logs/train_sudoku_prism_hard_7021953.log

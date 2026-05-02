@@ -1,0 +1,98 @@
+==========================================
+SLURM Job Information
+==========================================
+Job ID: 7566896
+Node:   babel-w5-24
+Start:  Tue Apr 28 23:33:44 EDT 2026
+Backbone ckpt: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+
+Python:  Python 3.9.21
+PyTorch: 2.5.1+cu121
+CUDA:    True
+
+==========================================
+Starting ReMDM NFE Sweep (hard)
+==========================================
+
+--- num_steps=81 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1620
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1620
+
+--- num_steps=162 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1800
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1800
+
+--- num_steps=243 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.2080
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.2080
+
+--- num_steps=405 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.2380
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.2380
+
+--- num_steps=729 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.2330
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.2330
+
+--- num_steps=1377 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.2900
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.2900
+
+--- num_steps=2673 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.3290
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.3290
+
+--- num_steps=5265 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.3830
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.3830
+
+--- num_steps=10449 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.4500
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.4500
+
+--- num_steps=20817 ---
+Loaded: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.5290
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.5290
+
+End: Wed Apr 29 01:16:26 EDT 2026
+All num_steps complete.

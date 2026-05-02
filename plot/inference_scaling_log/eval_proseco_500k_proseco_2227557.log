@@ -1,0 +1,98 @@
+==========================================
+SLURM Job Information
+==========================================
+Job ID: 2227557
+Job Name: eval_proseco_500k_proseco
+Node:   gh021
+Start Time: Fri May  1 23:36:56 CDT 2026
+Working Directory: /u/fwu5/mdm_correction
+Checkpoint: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+
+==========================================
+Setting Up Environment
+==========================================
+Python version: Python 3.11.13
+PyTorch version: 2.5.1
+CUDA available: True
+CUDA device: NVIDIA GH200 120GB
+
+==========================================
+Starting proseco eval (edit_step sweep)
+edit_freq=1 (corrector every DDPM step)
+steps=81    (T: one DDPM step per answer cell)
+==========================================
+--- edit_step=0 (NFEs=81) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-37-20
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_0: 0.135
+--- edit_step=1 (NFEs=162) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-37-33
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_1: 0.409
+--- edit_step=2 (NFEs=243) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-37-48
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_2: 0.513
+--- edit_step=4 (NFEs=405) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-38-08
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_4: 0.54
+--- edit_step=8 (NFEs=729) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-38-34
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_8: 0.557
+--- edit_step=16 (NFEs=1377) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-39-14
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_16: 0.562
+--- edit_step=32 (NFEs=2673) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-40-21
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_32: 0.555
+--- edit_step=64 (NFEs=5265) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-42-21
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_64: 0.555
+--- edit_step=128 (NFEs=10449) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-46-12
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_128: 0.555
+--- edit_step=256 (NFEs=20817) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/proseco-s123/2026-05-01_23-53-39
+Loading checkpoint from /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_256: 0.557
+
+==========================================
+Eval Complete
+==========================================
+End Time: Sat May  2 00:08:12 CDT 2026

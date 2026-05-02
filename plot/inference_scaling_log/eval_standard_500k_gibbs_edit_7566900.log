@@ -1,0 +1,86 @@
+==========================================
+SLURM Job Information
+==========================================
+Job ID: 7566900
+Node:   babel-u9-24
+Start:  Tue Apr 28 23:36:35 EDT 2026
+Checkpoint: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt
+
+Python:  
+PyTorch: 
+CUDA:    
+
+==========================================
+Starting gibbs_edit eval (edit_step sweep)
+==========================================
+--- edit_step=0 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-28_23-36-43
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_0: 0.526
+--- edit_step=1 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-28_23-37-06
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_1: 0.264
+--- edit_step=2 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-28_23-37-39
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_2: 0.279
+--- edit_step=4 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-28_23-38-24
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_4: 0.335
+--- edit_step=8 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-28_23-39-32
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_8: 0.347
+--- edit_step=16 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-28_23-41-29
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_16: 0.415
+--- edit_step=32 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-28_23-44-58
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_32: 0.482
+--- edit_step=64 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-28_23-51-33
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_64: 0.554
+--- edit_step=128 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-29_00-04-20
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_128: 0.686
+--- edit_step=256 ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-04-29_00-29-25
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/standard-hard-s123_date2026-03-30-22-47/step500000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy gibbs_edit_top_k_unmasking_1_editfreq_1_editstep_256: 0.778
+End: Wed Apr 29 01:19:07 EDT 2026

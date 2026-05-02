@@ -1,0 +1,104 @@
+==========================================
+SLURM Job Information
+==========================================
+Job ID: 2212437
+Job Name: puma_remdm_nfe_sweep_proseco
+Node:   gh094
+Start:  Wed Apr 29 11:37:08 CDT 2026
+Working Directory: /u/fwu5/PUMA
+Backbone ckpt: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+
+==========================================
+Setting Up Environment
+==========================================
+Python version: Python 3.11.13
+PyTorch version: 2.5.1
+CUDA available: True
+CUDA device: NVIDIA GH200 120GB
+
+==========================================
+Starting ReMDM NFE Sweep (hard, proseco)
+==========================================
+
+--- num_steps=81 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1300
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1300
+
+--- num_steps=162 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1610
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1610
+
+--- num_steps=243 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.1900
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.1900
+
+--- num_steps=405 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.2020
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.2020
+
+--- num_steps=729 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.2640
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.2640
+
+--- num_steps=1377 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.3420
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.3420
+
+--- num_steps=2673 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.3960
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.3960
+
+--- num_steps=5265 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.5150
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.5150
+
+--- num_steps=10449 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.6190
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.6190
+
+--- num_steps=20817 ---
+Loaded: /projects/bgqz/fwu5/checkpoints/sudoku_hard-pretraining-corrected/proseco-hard-s123_date2026-04-19-13-47/step500000.pt
+Params: 6.83M
+variant=rescale  eta=0.200  ->  acc=0.7050
+
+--- Summary ---
+  variant=rescale  eta=0.200  acc=0.7050
+
+End: Wed Apr 29 12:08:05 CDT 2026
+All num_steps complete.

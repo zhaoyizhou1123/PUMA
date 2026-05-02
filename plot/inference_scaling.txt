@@ -1,0 +1,12 @@
+progresive_edit+gibbs_standard:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_progressive_edit_460k_gibbs_standard_7566918.log
+progressive_edit+gibbs_edit:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_progressive_edit_460k_7566917.log
+progressive_edit+proseco:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_progressive_edit_460k_proseco_7643495.log
+progressive_edit+remdm:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_remdm_nfe_sweep_progressive_7566893.log
+standard+gibbs_standard:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_standard_500k_7566899.log
+standard+gibbs_edit:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_standard_500k_gibbs_edit_7566900.log
+standard+proseco:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_standard_500k_proseco_7643497.log
+standard+remdm:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_remdm_nfe_sweep_7566896.log
+proseco+gibbs_standard:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_proseco_500k_gibbs_standard_2211231.log
+proseco+gibbs_edit:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_proseco_500k_gibbs_edit_2211230.log
+proseco+proseco:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_proseco_500k_proseco_2227557.log
+proseco+remdm:/home/frankwu2/PUMA/plot/inference_scaling_log/eval_remdm_nfe_sweep_proseco_2212437.log

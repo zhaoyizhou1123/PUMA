@@ -1,0 +1,88 @@
+==========================================
+SLURM Job Information
+==========================================
+Job ID: 7643495
+Node:   babel-t9-24
+Start:  Sat May  2 00:54:26 EDT 2026
+Checkpoint: /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt
+
+Python:  
+PyTorch: 
+CUDA:    
+
+==========================================
+Starting proseco eval (edit_step sweep)
+edit_freq=1 (corrector every DDPM step)
+steps=81    (T: one DDPM step per answer cell)
+==========================================
+--- edit_step=0 (NFEs=81) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_00-56-08
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_0: 0.329
+--- edit_step=1 (NFEs=162) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_00-56-55
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_1: 0.509
+--- edit_step=2 (NFEs=243) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_00-57-27
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_2: 0.584
+--- edit_step=4 (NFEs=405) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_00-58-12
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_4: 0.642
+--- edit_step=8 (NFEs=729) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_00-59-18
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_8: 0.654
+--- edit_step=16 (NFEs=1377) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_01-01-12
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_16: 0.66
+--- edit_step=32 (NFEs=2673) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_01-04-36
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_32: 0.667
+--- edit_step=64 (NFEs=5265) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_01-11-05
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_64: 0.667
+--- edit_step=128 (NFEs=10449) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_01-23-38
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_128: 0.66
+--- edit_step=256 (NFEs=20817) ---
+Hey, we start training!
+Training with 1 GPUs
+Logging to track/sudoku_hard-pretraining-corrected/progressive_edit-s123/2026-05-02_01-48-23
+Loading checkpoint from /data/user_data/frankwu2/PUMA/checkpoints/sudoku_hard-pretraining-corrected/progressive_edit-s123_date2026-03-30-12-48/step460000.pt for evaluation
+Model is ready, parameters: 6.83M
+Validation Accuracy proseco_top_k_unmasking_1_editfreq_1_editstep_256: 0.667
+End: Sat May  2 02:37:23 EDT 2026
