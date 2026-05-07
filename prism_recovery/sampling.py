@@ -49,6 +49,7 @@ def prism_sampling(
     temperature   = sampling_cfg.temperature
     confidence    = sampling_cfg.confidence
     unmasking_num = sampling_cfg.unmasking_num
+    unmask_mode   = getattr(sampling_cfg, "unmask_mode", "top_k")
     step_on       = getattr(sampling_cfg, "step_on",    0)
     step_off_val  = getattr(sampling_cfg, "step_off",   float('inf'))
     num_remask    = getattr(sampling_cfg, "num_remask",  0)
@@ -79,9 +80,13 @@ def prism_sampling(
         logits_noisy = gumbel_softmax(logits, temperature=temperature)
         p = F.softmax(logits, dim=-1)
 
-        # ---- confidence score for choosing which masks to open ----
-        if confidence == "top_k":
-            unmask_score = torch.where(mask_indices, p.max(dim=-1).values, float('-inf'))
+        # ---- score for choosing which masks to open ----
+        if unmask_mode == "random":
+            unmask_score = torch.where(
+                mask_indices,
+                torch.rand(B, L, device=xt.device),
+                torch.full((B, L), float('-inf'), device=xt.device),
+            )
         elif confidence == "top_k_margin":
             top2 = p.topk(k=2, dim=-1).values
             unmask_score = torch.where(mask_indices, top2[..., 0] - top2[..., 1], float('-inf'))

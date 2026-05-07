@@ -27,6 +27,7 @@ def prism_training_step(
     num_demasking_tokens: int,          # k: how many tokens to reveal in one step
     reg_lambda: float = 0.5,            # weight on backbone CE regularisation loss
     tune_backbone: bool = False,        # if True, gradients flow through backbone
+    unmask_mode: str = "top_k",         # "top_k" or "random" for selecting which masked tokens to fill
 ) -> dict[str, torch.Tensor]:
     """
     Compute the PRISM fine-tuning loss for one batch.
@@ -46,7 +47,7 @@ def prism_training_step(
     L_eff = (~prompt_mask).sum(dim=1).float()                         # [B]
     num_mask = (torch.rand(B, device=device) * L_eff).long().clamp(min=1)  # [B]
 
-    # Assign +inf score to prompt positions so they sort to the end
+    # Assign +inf score to prompt positions so they sort to the end.
     noise = torch.rand(B, L, device=device).masked_fill(prompt_mask, float('inf'))
     order = noise.argsort(dim=1)
     mask_indices = (order < num_mask.unsqueeze(1))   # [B, L] bool
@@ -62,17 +63,24 @@ def prism_training_step(
             logits, _ = model.forward_with_hidden(x_t)
 
     # ------------------------------------------------------------------
-    # 3. One-step unmask:  pick the top-k most confident masked tokens,
-    #    assign them the backbone's argmax prediction → x_s
+    # 3. One-step unmask: choose which masked tokens to reveal according
+    #    to the configured mode, then assign backbone argmax predictions.
     # ------------------------------------------------------------------
     with torch.no_grad():
         p = torch.softmax(logits, dim=-1)                           # [B, L, V]
-        conf = p.max(dim=-1).values                                 # [B, L]
-        unmask_score = torch.where(
-            mask_indices,
-            conf,
-            torch.full_like(conf, float('-inf')),
-        )
+        if unmask_mode == "random":
+            unmask_score = torch.where(
+                mask_indices,
+                torch.rand(B, L, device=device),
+                torch.full((B, L), float('-inf'), device=device),
+            )
+        else:
+            conf = p.max(dim=-1).values                             # [B, L]
+            unmask_score = torch.where(
+                mask_indices,
+                conf,
+                torch.full_like(conf, float('-inf')),
+            )
 
         k = min(num_demasking_tokens, int(mask_indices.sum(dim=-1).max().item()))
         update_mask = torch.zeros_like(mask_indices)               # [B, L] bool

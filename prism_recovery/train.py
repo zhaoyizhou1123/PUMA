@@ -289,6 +289,8 @@ def main(cfg: DictConfig):
     # ------------------------------------------------------------------
     prism_num_demask  = int(prism_cfg.num_demasking_tokens)
     prism_reg_lambda  = float(prism_cfg.reg_lambda)
+    prism_train_unmask = str(prism_cfg.get("train_unmask_mode", "top_k"))
+    prism_eval_unmask  = str(prism_cfg.get("eval_unmask_mode", "top_k"))
 
     global_step = 0
 
@@ -316,6 +318,7 @@ def main(cfg: DictConfig):
                     num_demasking_tokens=prism_num_demask,
                     reg_lambda=prism_reg_lambda,
                     tune_backbone=tune_backbone,
+                    unmask_mode=prism_train_unmask,
                 )
 
             loss = result["loss"]
@@ -360,6 +363,7 @@ def main(cfg: DictConfig):
                     prism_sampling_cfg.num_remask = int(prism_cfg.get("num_remask", 1))
                     prism_sampling_cfg.step_on    = int(prism_cfg.get("step_on",    0))
                     prism_sampling_cfg.step_off   = int(prism_cfg.get("step_off",   999999))
+                    prism_sampling_cfg.unmask_mode = prism_eval_unmask
                 prism_acc = evaluate(model, cfg, device, rank, world_size, prism_sampling_cfg, global_step, track_dir, use_prism=True)
 
                 if is_main:

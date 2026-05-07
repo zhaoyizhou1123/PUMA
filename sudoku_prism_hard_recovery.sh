@@ -15,9 +15,9 @@
 # PRISM recovery run — reverts Apr9→Apr18 changes to reproduce the Apr 9 result.
 #
 # Differences from prism/ (current):
-#   algorithm.py: argmax (not multinomial) for token filling; no unmask_mode param
-#   train.py:     no train_unmask_mode / eval_unmask_mode wiring
-#   sampling.py:  unchanged (second forward pass already reverted in Apr 27 commit)
+#   algorithm.py: argmax-based token filling, matching the historical PRISM path
+#   train.py:     recovery package now honors train/eval unmask modes from config
+#   sampling.py:  preserved historical remasking behavior while allowing mode wiring
 # ============================================================================
 
 export WANDB_API_KEY="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"
@@ -50,6 +50,8 @@ echo "=========================================="
     --config-path ../yaml_files/sudoku_hard \
     --config-name prism_finetune \
     prism.pretrained_ckpt="${PRETRAINED_CKPT}" \
+    prism.train_unmask_mode=top_k \
+    prism.eval_unmask_mode=top_k \
     training.eval_steps=1000 \
     training.save_steps=5000 \
     training.max_steps=50000 \
